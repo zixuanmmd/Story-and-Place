@@ -1,0 +1,63 @@
+.map-load-failure {
+  position: absolute;
+  inset: 0;
+  z-index: 450;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 28px;
+  background: #eeece4;
+  text-align: center;
+}
+
+.map-load-failure > span {
+  font-size: 38px;
+}
+
+.map-load-failure h2,
+.map-load-failure p {
+  margin: 0;
+}
+
+.map-load-failure p {
+  max-width: 380px;
+  color: var(--muted);
+}
+
+.query-limit-notice {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border: 1px solid #c8b98c;
+  border-radius: 8px;
+  background: #f6f0dc;
+  color: #62542e;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.fatal-error-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--paper);
+}
+
+.fatal-error-page > section {
+  width: min(100%, 560px);
+  padding: 34px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: 0 18px 50px rgba(38, 37, 31, 0.08);
+}
+
+.fatal-error-page h1 {
+  margin: 8px 0 12px;
+}
+
+.fatal-error-page p:not(.eyebrow) {
+  color: var(--muted);
+}
