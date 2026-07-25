@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
 import {
   createComment,
@@ -22,6 +22,7 @@ import type { MapEntryWithProfile } from "@/types/database";
 import { ReportDialog } from "@/components/social/report-dialog";
 import { getMyGroupRole } from "@/lib/data/groups";
 import type { GroupRole } from "@/types/database";
+import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 
 export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
   const { user } = useAuth();
@@ -35,19 +36,31 @@ export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
   const [groupRole, setGroupRole] = useState<GroupRole | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState("");
+  const loadRequestSequence = useRef(0);
 
   const load = useCallback(async () => {
     if (entry.visibility === "private") return;
+    const requestId = ++loadRequestSequence.current;
+    setStatus(null);
+    setComments([]);
+    setLikeCount(0);
+    setLiked(false);
+    setHasMore(false);
+    setGroupRole(null);
     const [social, page] = await Promise.all([
       getEntrySocialState(entry.id, user?.id ?? null),
       listComments(entry.id),
     ]);
+    if (loadRequestSequence.current !== requestId) return;
     setLikeCount(social.likeCount);
     setLiked(social.liked);
     setComments(page.comments);
     setHasMore(page.hasMore);
     if (entry.group_id && user) {
-      setGroupRole(await getMyGroupRole(entry.group_id, user.id));
+      const nextGroupRole = await getMyGroupRole(entry.group_id, user.id);
+      if (loadRequestSequence.current === requestId) {
+        setGroupRole(nextGroupRole);
+      }
     }
   }, [entry.group_id, entry.id, entry.visibility, user]);
 
@@ -60,6 +73,7 @@ export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
     }, 0);
     return () => {
       current = false;
+      loadRequestSequence.current += 1;
       window.clearTimeout(timer);
     };
   }, [load]);
@@ -165,12 +179,17 @@ export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
   };
 
   const loadMore = async () => {
-    const cursor = comments.at(-1)?.created_at;
-    if (!cursor) return;
+    const lastComment = comments.at(-1);
+    if (!lastComment) return;
     setBusy(true);
     try {
-      const page = await listComments(entry.id, cursor);
-      setComments((current) => [...current, ...page.comments]);
+      const page = await listComments(entry.id, {
+        timestamp: lastComment.created_at,
+        id: lastComment.id,
+      });
+      setComments((current) =>
+        mergeUniqueById(current, page.comments),
+      );
       setHasMore(page.hasMore);
     } catch (error) {
       setStatus(getFriendlyError(error, "更多评论加载失败。"));

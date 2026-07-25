@@ -11,9 +11,12 @@ export const groupFormSchema = z.object({
   description: z.string().trim().max(2000, "群组简介不能超过 2000 个字符。"),
   avatar_url: z
     .union([z.literal(""), z.url("请输入有效的头像网址。")])
-    .refine((value) => value.length <= 2048, "头像网址过长。"),
+    .refine((value) => value.length <= 2048, "头像网址过长。")
+    .refine(
+      (value) => !value || value.startsWith("https://"),
+      "群组头像必须使用 https:// 安全地址。",
+    ),
   visibility: z.enum(["public", "private"]),
 });
 
 export type GroupFormValues = z.infer<typeof groupFormSchema>;
-

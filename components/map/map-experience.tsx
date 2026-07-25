@@ -105,6 +105,7 @@ function MapExperienceForScope({
   const router = useRouter();
   const searchParams = useSearchParams();
   const handledUrlEntry = useRef<string | null>(null);
+  const handledGroupDraft = useRef<string | null>(null);
   const restoredDraftForUser = useRef<string | null>(null);
 
   const [status, setStatus] = useState<string | null>(null);
@@ -119,6 +120,7 @@ function MapExperienceForScope({
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>(null);
   const [groupOptions, setGroupOptions] = useState<Array<Pick<Group, "id" | "name">>>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
+  const [groupsReady, setGroupsReady] = useState(false);
 
   const loadVisible = useCallback(() => listVisibleEntries(), []);
   const entryQuery = useScopedEntryQuery<MapEntryWithProfile>({
@@ -145,9 +147,13 @@ function MapExperienceForScope({
             .filter((group) => joined.has(group.id) && !group.archived_at)
             .map(({ id, name }) => ({ id, name })),
         );
+        setGroupsReady(true);
       })
       .catch(() => {
-        if (current) setGroupOptions([]);
+        if (current) {
+          setGroupOptions([]);
+          setGroupsReady(true);
+        }
       });
     return () => {
       current = false;
@@ -269,6 +275,31 @@ function MapExperienceForScope({
     setMobilePanel("editor");
     setStatus(null);
   }, []);
+
+  useEffect(() => {
+    const requestedGroupId = searchParams.get("group");
+    if (!requestedGroupId || handledGroupDraft.current === requestedGroupId) {
+      return;
+    }
+    if (!user || !groupsReady) return;
+
+    handledGroupDraft.current = requestedGroupId;
+    const timer = window.setTimeout(() => {
+      if (!activeGroupIds.includes(requestedGroupId)) {
+        setStatus("你已经不是这个群组的有效成员，不能发布群组记录。");
+        return;
+      }
+      startCreate(viewCenter);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeGroupIds,
+    groupsReady,
+    searchParams,
+    startCreate,
+    user,
+    viewCenter,
+  ]);
 
   const selectEntry = useCallback((entry: MapEntryWithProfile) => {
     setEditor(null);

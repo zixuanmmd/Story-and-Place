@@ -499,13 +499,7 @@
 }
 
 @media (max-width: 760px) {
-  .main-nav {
-    max-width: 64vw;
-    overflow-x: auto;
-  }
-
   .main-nav .quiet-button {
-    flex: 0 0 auto;
     padding-inline: 8px;
   }
 

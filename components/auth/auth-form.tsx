@@ -5,15 +5,32 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { getFriendlyError } from "@/lib/errors";
+import { getFriendlyError, reportOperationalError } from "@/lib/errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isDisplayNameAvailable } from "@/lib/data/profiles";
+import {
+  DISPLAY_NAME_TAKEN_MESSAGE,
+  normalizeDisplayNameForStorage,
+} from "@/lib/profile/display-name";
 import {
   loginFormSchema,
   registerSchema,
   type RegisterValues,
 } from "@/lib/validation/auth";
 import { useAuth } from "@/components/providers/auth-provider";
-import { getSafeRedirectPath } from "@/lib/navigation/safe-redirect";
+import {
+  getAuthPageHref,
+  getSafeRedirectPath,
+} from "@/lib/navigation/safe-redirect";
+import {
+  requireEmailConfirmation,
+  TEST_REGISTRATION_NOTICE,
+} from "@/lib/auth/config";
+import {
+  EMAIL_ALREADY_REGISTERED_NOTICE,
+  isDuplicateEmailError,
+  resolveRegistrationOutcome,
+} from "@/lib/auth/registration";
 
 type AuthFormProps = {
   mode: "login" | "register";
@@ -23,37 +40,68 @@ export function AuthForm({ mode }: AuthFormProps) {
   const isRegister = mode === "register";
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { configured } = useAuth();
+  const nextCandidate = searchParams.get("next");
+  const { configured, refreshAuth } = useAuth();
   const [notice, setNotice] = useState<string | null>(null);
+  const [showLoginAction, setShowLoginAction] = useState(false);
 
   const form = useForm<RegisterValues>({
     resolver: zodResolver(isRegister ? registerSchema : loginFormSchema),
-    defaultValues: { displayName: "", email: "", password: "" },
+    defaultValues: {
+      displayName: "",
+      email: isRegister ? "" : (searchParams.get("email") ?? ""),
+      password: "",
+    },
   });
 
   const onSubmit = form.handleSubmit(async (values) => {
     setNotice(null);
+    setShowLoginAction(false);
     if (!configured) {
       setNotice("Supabase 尚未配置，请先填写本地环境变量。");
       return;
     }
 
+    let signUpAttempted = false;
     try {
       const supabase = getSupabaseBrowserClient();
       if (isRegister) {
+        const displayName = normalizeDisplayNameForStorage(values.displayName);
+        form.setValue("displayName", displayName);
+        const available = await isDisplayNameAvailable(displayName);
+        if (!available) {
+          form.setError("displayName", {
+            type: "validate",
+            message: DISPLAY_NAME_TAKEN_MESSAGE,
+          });
+          form.setFocus("displayName");
+          return;
+        }
+
+        signUpAttempted = true;
         const { data, error } = await supabase.auth.signUp({
           email: values.email,
           password: values.password,
           options: {
-            data: { display_name: values.displayName.trim() },
+            data: { display_name: displayName },
           },
         });
         if (error) throw error;
 
-        if (!data.session) {
-          setNotice("注册成功。请前往邮箱完成验证后再登录。");
+        const outcome = resolveRegistrationOutcome({
+          hasSession: Boolean(data.session),
+          user: data.user,
+          emailConfirmationRequired: requireEmailConfirmation,
+        });
+        if (!outcome.shouldNavigate) {
+          setNotice(outcome.notice);
+          if (outcome.kind === "possibly-registered") {
+            setShowLoginAction(true);
+            form.resetField("password", { defaultValue: "" });
+          }
           return;
         }
+        setNotice("注册成功，正在进入地图……");
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email: values.email,
@@ -62,12 +110,54 @@ export function AuthForm({ mode }: AuthFormProps) {
         if (error) throw error;
       }
 
+      await refreshAuth();
       router.replace(
         getSafeRedirectPath(searchParams.get("next"), window.location.origin),
       );
       router.refresh();
     } catch (error) {
-      setNotice(getFriendlyError(error));
+      reportOperationalError(error, isRegister ? "auth:sign-up" : "auth:sign-in");
+      if (isRegister && isDuplicateEmailError(error)) {
+        setNotice(EMAIL_ALREADY_REGISTERED_NOTICE);
+        setShowLoginAction(true);
+        form.resetField("password", { defaultValue: "" });
+        return;
+      }
+
+      if (isRegister && signUpAttempted) {
+        try {
+          const stillAvailable = await isDisplayNameAvailable(
+            normalizeDisplayNameForStorage(form.getValues("displayName")),
+          );
+          if (!stillAvailable) {
+            form.setError("displayName", {
+              type: "validate",
+              message: DISPLAY_NAME_TAKEN_MESSAGE,
+            });
+            form.setFocus("displayName");
+            form.resetField("password", { defaultValue: "" });
+            return;
+          }
+        } catch (availabilityError) {
+          reportOperationalError(
+            availabilityError,
+            "auth:display-name-race-check",
+          );
+        }
+      }
+
+      setNotice(
+        getFriendlyError(
+          error,
+          isRegister
+            ? "注册暂时没有成功，请稍后重试。"
+            : "登录暂时没有成功，请稍后重试。",
+          {
+          requireEmailConfirmation,
+          },
+        ),
+      );
+      if (isRegister) form.resetField("password", { defaultValue: "" });
     }
   });
 
@@ -84,6 +174,12 @@ export function AuthForm({ mode }: AuthFormProps) {
             ? "用一个名字开始，在地点与时间之间留下属于你的记录。"
             : "登录后可查看私密记录，并继续书写未完成的故事。"}
         </p>
+
+        {isRegister && !requireEmailConfirmation ? (
+          <p className="auth-test-notice" role="note">
+            {TEST_REGISTRATION_NOTICE}
+          </p>
+        ) : null}
 
         {!configured ? (
           <div className="notice notice--warning" role="alert">
@@ -146,6 +242,19 @@ export function AuthForm({ mode }: AuthFormProps) {
           {notice ? (
             <div className="notice" role="status">
               {notice}
+              {showLoginAction ? (
+                <Link
+                  className="notice-action"
+                  href={getAuthPageHref(
+                    "/login",
+                    nextCandidate,
+                    "http://local.story-map",
+                    form.getValues("email"),
+                  )}
+                >
+                  前往登录
+                </Link>
+              ) : null}
             </div>
           ) : null}
 
@@ -165,7 +274,12 @@ export function AuthForm({ mode }: AuthFormProps) {
         <p className="auth-switch">
           {isRegister ? "已经有账户？" : "还没有账户？"}
           <Link
-            href={isRegister ? "/login" : "/register"}
+            href={getAuthPageHref(
+              isRegister ? "/login" : "/register",
+              nextCandidate,
+              "http://local.story-map",
+              isRegister ? form.getValues("email") : undefined,
+            )}
           >
             {isRegister ? "前往登录" : "创建账户"}
           </Link>

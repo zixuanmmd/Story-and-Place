@@ -8,6 +8,7 @@ export type Json =
 
 export type TimePrecision = "exact" | "date" | "month" | "year" | "approximate";
 export type EntryVisibility = "public" | "private" | "group";
+export type StoryRouteVisibility = "public" | "private" | "group";
 export type GroupVisibility = "public" | "private";
 export type GroupRole = "owner" | "admin" | "member";
 export type GroupMemberStatus = "active" | "left" | "removed";
@@ -371,9 +372,115 @@ export type Database = {
         Update: Record<string, never>;
         Relationships: [];
       };
+      story_routes: {
+        Row: {
+          id: string;
+          created_by: string;
+          group_id: string | null;
+          title: string;
+          description: string;
+          visibility: StoryRouteVisibility;
+          share_slug: string;
+          published_at: string | null;
+          archived_at: string | null;
+          archived_by: string | null;
+          featured_at: string | null;
+          featured_by: string | null;
+          privacy_downgraded_at: string | null;
+          node_count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          created_by: string;
+          group_id?: string | null;
+          title: string;
+          description?: string;
+          visibility?: StoryRouteVisibility;
+          share_slug?: string;
+          published_at?: string | null;
+          archived_at?: string | null;
+          archived_by?: string | null;
+          featured_at?: string | null;
+          featured_by?: string | null;
+          privacy_downgraded_at?: string | null;
+          node_count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          title?: string;
+          description?: string;
+          visibility?: StoryRouteVisibility;
+          group_id?: string | null;
+          published_at?: string | null;
+          archived_at?: string | null;
+          archived_by?: string | null;
+          featured_at?: string | null;
+          featured_by?: string | null;
+          privacy_downgraded_at?: string | null;
+          node_count?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "story_routes_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "story_routes_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      story_route_items: {
+        Row: {
+          id: string;
+          route_id: string;
+          entry_id: string;
+          position: number;
+          note: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          route_id: string;
+          entry_id: string;
+          position: number;
+          note?: string;
+          created_at?: string;
+        };
+        Update: { position?: number; note?: string };
+        Relationships: [
+          {
+            foreignKeyName: "story_route_items_route_id_fkey";
+            columns: ["route_id"];
+            isOneToOne: false;
+            referencedRelation: "story_routes";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "story_route_items_entry_id_fkey";
+            columns: ["entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: Record<string, never>;
     Functions: {
+      is_display_name_available: {
+        Args: { candidate: string };
+        Returns: boolean;
+      };
       join_public_group: { Args: { p_group_id: string }; Returns: undefined };
       leave_group: { Args: { p_group_id: string }; Returns: undefined };
       invite_group_member: {
@@ -412,6 +519,51 @@ export type Database = {
         };
         Returns: FeedEntry[];
       };
+      can_view_story_route: {
+        Args: { p_route_id: string };
+        Returns: boolean;
+      };
+      can_read_story_route_item: {
+        Args: { p_route_id: string; p_entry_id: string };
+        Returns: boolean;
+      };
+      save_story_route: {
+        Args: {
+          p_route_id: string | null;
+          p_title: string;
+          p_description: string;
+          p_visibility: StoryRouteVisibility;
+          p_group_id: string | null;
+          p_publish: boolean;
+          p_items: Json;
+        };
+        Returns: string;
+      };
+      archive_story_route: {
+        Args: { p_route_id: string };
+        Returns: undefined;
+      };
+      feature_story_route: {
+        Args: { p_route_id: string; p_featured: boolean };
+        Returns: undefined;
+      };
+      get_timeline_entries: {
+        Args: {
+          p_scope: "mine" | "user" | "group";
+          p_target_id: string;
+          p_order?: "asc" | "desc";
+          p_visibility?: EntryVisibility | null;
+          p_category_slugs?: string[] | null;
+          p_author_id?: string | null;
+          p_keyword?: string | null;
+          p_start_year?: number | null;
+          p_end_year?: number | null;
+          p_include_undated?: boolean;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
@@ -427,9 +579,20 @@ export type Group = Database["public"]["Tables"]["groups"]["Row"];
 export type GroupMember = Database["public"]["Tables"]["group_members"]["Row"];
 export type GroupInvitation = Database["public"]["Tables"]["group_invitations"]["Row"];
 export type EntryComment = Database["public"]["Tables"]["entry_comments"]["Row"];
+export type StoryRoute = Database["public"]["Tables"]["story_routes"]["Row"];
+export type StoryRouteItem = Database["public"]["Tables"]["story_route_items"]["Row"];
 
 export type MapEntryWithProfile = MapEntry & {
   profiles: Pick<Profile, "display_name" | "avatar_url"> | null;
+};
+
+export type StoryRouteWithRelations = StoryRoute & {
+  profiles: Pick<Profile, "display_name" | "avatar_url"> | null;
+  groups: Pick<Group, "name" | "slug" | "archived_at"> | null;
+};
+
+export type StoryRouteItemWithEntry = StoryRouteItem & {
+  map_entries: MapEntryWithProfile | null;
 };
 
 export type FeedEntry = {

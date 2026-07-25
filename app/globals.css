@@ -21,6 +21,7 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  overflow-x: hidden;
   background: var(--paper);
   color: var(--ink);
   font-family: "Noto Serif SC", "Songti SC", "STSong", ui-serif, Georgia, serif;
@@ -77,6 +78,10 @@ button {
   gap: 6px;
   font-family: ui-sans-serif, system-ui, sans-serif;
   font-size: 13px;
+}
+
+.mobile-nav-toggle {
+  display: none;
 }
 
 .nav-link {
@@ -878,7 +883,12 @@ button {
 @media (max-width: 760px) {
   .app-header {
     height: 62px;
+    gap: 10px;
     padding: 0 14px;
+  }
+
+  .brand-link {
+    min-width: 0;
   }
 
   .brand-kicker {
@@ -887,6 +897,7 @@ button {
 
   .brand-title {
     font-size: 17px;
+    white-space: nowrap;
   }
 
   .map-layout {
@@ -985,7 +996,48 @@ button {
   }
 
   .main-nav {
+    position: fixed;
+    z-index: 1200;
+    top: 70px;
+    right: 8px;
+    left: 8px;
+    display: none;
+    max-width: none;
+    max-height: calc(100dvh - 78px);
+    flex-direction: column;
+    align-items: stretch;
     gap: 4px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 10px;
+    background: rgba(255, 253, 248, 0.98);
+    box-shadow: 0 18px 55px rgba(38, 37, 31, 0.24);
+  }
+
+  .main-nav--open {
+    display: flex;
+  }
+
+  .main-nav .nav-link,
+  .main-nav > button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .mobile-nav-toggle {
+    display: inline-flex;
+    min-width: 72px;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: #fffdf8;
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
   }
 
   .main-nav .secondary-button,
@@ -1137,6 +1189,16 @@ button {
   text-underline-offset: 3px;
 }
 
+.notice-action {
+  display: block;
+  width: fit-content;
+  margin-top: 8px;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -1154,6 +1216,16 @@ button:disabled {
   margin-left: 6px;
   color: var(--accent);
   font-weight: 700;
+}
+
+.auth-test-notice {
+  margin: -4px 0 18px;
+  border-left: 2px solid #b1a78f;
+  padding: 2px 0 2px 10px;
+  color: var(--muted);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .page-loading {

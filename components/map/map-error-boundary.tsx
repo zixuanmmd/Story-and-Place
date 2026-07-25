@@ -17,7 +17,12 @@ export class MapErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    reportOperationalError({ error, componentStack: info.componentStack }, "map-render");
+    reportOperationalError(error, "map-render");
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[story-map:map-render:component-stack]", {
+        componentStack: info.componentStack,
+      });
+    }
   }
 
   render() {

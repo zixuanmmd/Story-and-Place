@@ -12,7 +12,15 @@ import type { FeedEntry } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
-function FeedLike({ entry, userId }: { entry: FeedEntry; userId: string }) {
+function FeedLike({
+  entry,
+  userId,
+  onError,
+}: {
+  entry: FeedEntry;
+  userId: string;
+  onError: (message: string) => void;
+}) {
   const [liked, setLiked] = useState(entry.user_liked);
   const [count, setCount] = useState(Number(entry.like_count));
   const [busy, setBusy] = useState(false);
@@ -22,9 +30,10 @@ function FeedLike({ entry, userId }: { entry: FeedEntry; userId: string }) {
     setLiked(next);
     setCount((current) => Math.max(0, current + (next ? 1 : -1)));
     void (next ? likeEntry(entry.id, userId) : unlikeEntry(entry.id, userId))
-      .catch(() => {
+      .catch((error: unknown) => {
         setLiked(!next);
         setCount((current) => Math.max(0, current + (next ? -1 : 1)));
+        onError(getFriendlyError(error, "点赞操作失败，请重试。"));
       })
       .finally(() => setBusy(false));
   }}>{liked ? "已喜欢" : "喜欢"} · {count}</button>;
@@ -45,6 +54,7 @@ function FeedForScope() {
   const load = useCallback(async (append = false) => {
     if (!user) return;
     setLoading(true);
+    setStatus(null);
     try {
       const last = append ? entries.at(-1) : undefined;
       const page = await listFeed(last ? { createdAt: last.created_at, id: last.id } : undefined);
@@ -97,7 +107,7 @@ function FeedForScope() {
       <AppHeader />
       <div className="feed-container">
         <div className="page-heading"><div><p className="eyebrow">RECENT STORIES</p><h1>信息流</h1><p>只按发布时间排列：关注者的公开记录、已加入群组的记录，以及你自己的记录。</p></div></div>
-        {!configured ? <ProtectedState kind="config" /> : authLoading ? <ProtectedState kind="loading" /> : !user ? <ProtectedState kind="signed-out" /> : (
+        {!configured ? <ProtectedState kind="config" /> : authLoading ? <ProtectedState kind="loading" /> : !user ? <ProtectedState kind="signed-out" nextPath="/feed" signedOutDescription="登录后可以阅读关注用户和已加入群组中的最新故事。" /> : (
           <>
             {status ? <div className="inline-error" role="alert">{status}</div> : null}
             <div className="feed-list">
@@ -108,11 +118,11 @@ function FeedForScope() {
                   <h2>{entry.title}</h2>
                   <p className="feed-place">{entry.time_label}{entry.place_name ? ` · ${entry.place_name}` : ""}</p>
                   <p className="feed-excerpt">{entry.content}</p>
-                  <footer>{entry.visibility === "private" ? <span>仅自己可见，不开放互动</span> : <FeedLike entry={entry} userId={user.id} />}<span>评论 · {Number(entry.comment_count)}</span><Link href={`/?entry=${entry.id}`}>地图定位与详情</Link></footer>
+                  <footer>{entry.visibility === "private" ? <span>仅自己可见，不开放互动</span> : <FeedLike entry={entry} userId={user.id} onError={setStatus} />}<span>评论 · {Number(entry.comment_count)}</span><Link href={`/?entry=${entry.id}`}>地图定位与详情</Link></footer>
                 </article>
               ))}
             </div>
-            {!entries.length && !loading ? <div className="content-state"><h2>信息流还是空的</h2><p>关注其他用户、加入群组，或先写下一条记录。</p><div className="record-actions"><Link href="/groups">发现群组</Link><Link href="/">前往地图</Link></div></div> : null}
+            {!entries.length && !loading && !status ? <div className="content-state"><h2>信息流还是空的</h2><p>关注其他用户、加入群组，或先写下一条记录。</p><div className="record-actions"><Link href="/groups">发现群组</Link><Link href="/">前往地图</Link></div></div> : null}
             {loading ? <div className="content-state" role="status">正在读取故事…</div> : null}
             {hasMore ? <button className="secondary-button feed-more" disabled={loading} type="button" onClick={() => void load(true)}>加载更多（每页 {FEED_PAGE_SIZE} 条）</button> : null}
           </>

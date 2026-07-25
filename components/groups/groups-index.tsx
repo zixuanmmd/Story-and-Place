@@ -5,8 +5,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
 import { joinPublicGroup, listVisibleGroups } from "@/lib/data/groups";
-import { getFriendlyError } from "@/lib/errors";
+import { getFriendlyError, reportOperationalError } from "@/lib/errors";
+import {
+  classifyGroupLoadError,
+  getGroupDirectoryViewMode,
+  type GroupLoadError,
+} from "@/lib/groups/load-error";
 import type { Group, GroupInvitation, GroupMember } from "@/types/database";
+import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 
 function GroupCard({ group, role, onJoin }: { group: Group; role?: string; onJoin?: () => void }) {
   return (
@@ -47,10 +53,20 @@ function GroupsIndexForScope() {
   const [loading, setLoading] = useState(true);
   const [hasMore, setHasMore] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<GroupLoadError | null>(null);
 
   const load = useCallback(async () => {
-    if (!configured || authLoading) return;
+    if (authLoading) return;
+    if (!configured) {
+      setLoading(false);
+      setLoadError({
+        kind: "initialization",
+        message: "Supabase 尚未配置，群组功能无法连接数据库。",
+      });
+      return;
+    }
     setLoading(true);
+    setLoadError(null);
     try {
       const result = await listVisibleGroups(user?.id ?? null);
       setGroups(result.groups.slice(0, 100));
@@ -58,7 +74,8 @@ function GroupsIndexForScope() {
       setMemberships(result.memberships);
       setInvitations(result.invitations);
     } catch (error) {
-      setStatus(getFriendlyError(error, "群组暂时无法加载。请确认最新 migration 已执行。"));
+      reportOperationalError(error, "groups:list-visible");
+      setLoadError(classifyGroupLoadError(error));
     } finally {
       setLoading(false);
     }
@@ -74,6 +91,7 @@ function GroupsIndexForScope() {
   );
   const joined = groups.filter((group) => membershipMap.has(group.id));
   const discover = groups.filter((group) => group.visibility === "public" && !membershipMap.has(group.id) && !group.archived_at);
+  const viewMode = getGroupDirectoryViewMode(loading, loadError);
 
   const join = async (group: Group) => {
     if (!user) {
@@ -89,10 +107,15 @@ function GroupsIndexForScope() {
     }
   };
   const loadMore = async () => {
+    const lastGroup = groups.at(-1);
+    if (!lastGroup) return;
     setLoading(true);
     try {
-      const result = await listVisibleGroups(user?.id ?? null, groups.length);
-      setGroups((current) => [...current, ...result.groups]);
+      const result = await listVisibleGroups(user?.id ?? null, {
+        timestamp: lastGroup.updated_at,
+        id: lastGroup.id,
+      });
+      setGroups((current) => mergeUniqueById(current, result.groups));
       setMemberships(result.memberships);
       setInvitations(result.invitations);
       setHasMore(result.truncated);
@@ -114,8 +137,17 @@ function GroupsIndexForScope() {
             <Link className="primary-button nav-link" href={user ? "/groups/new" : "/login?next=%2Fgroups%2Fnew"}>创建群组</Link>
           </div>
         </div>
-        {status ? <div className="inline-error" role="status">{status}</div> : null}
-        {loading ? <div className="content-state" role="status">正在读取群组…</div> : (
+        {status && viewMode === "content" ? <div className="inline-success" role="status">{status}</div> : null}
+        {viewMode === "loading" ? <div className="content-state" role="status">正在读取群组…</div> : viewMode === "error" ? (
+          <div className="content-state" role="alert">
+            <h2>{loadError?.message ?? "群组加载失败，请重试。"}</h2>
+            <p>没有返回空数据来掩盖本次失败。</p>
+            <div className="record-actions">
+              <button className="primary-button" type="button" onClick={() => void load()}>重试</button>
+              <Link className="secondary-button nav-link" href="/">返回地图</Link>
+            </div>
+          </div>
+        ) : (
           <>
             {user ? <section className="content-section"><h2>我加入的群组</h2><div className="group-grid">{joined.length ? joined.map((group) => <GroupCard key={group.id} group={group} role={membershipMap.get(group.id)?.role} />) : <div className="small-empty">你还没有加入群组。</div>}</div></section> : null}
             <section className="content-section"><h2>可加入的公开群组</h2><div className="group-grid">{discover.length ? discover.map((group) => <GroupCard key={group.id} group={group} onJoin={() => void join(group)} />) : <div className="small-empty">暂时没有可加入的公开群组。</div>}</div></section>

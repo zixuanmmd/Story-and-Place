@@ -72,6 +72,21 @@ insert into public.map_entries (
   2026, 'year', '2026 年', 'private', null, 'home'
 );
 
+-- A repeated public-group join by the owner must be idempotent and must never
+-- demote the only owner.
+select public.join_public_group('41000000-0000-4000-8000-000000000001');
+select pg_temp.assert_true(
+  exists (
+    select 1
+    from public.group_members
+    where group_id = '41000000-0000-4000-8000-000000000001'
+      and user_id = '11000000-0000-4000-8000-000000000001'
+      and role = 'owner'
+      and status = 'active'
+  ),
+  '群主重复加入公开群组后必须仍然是有效群主'
+);
+
 reset role;
 set local role anon;
 select set_config('request.jwt.claims', '{}', true);

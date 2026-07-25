@@ -8,6 +8,11 @@ import type {
   Profile,
 } from "@/types/database";
 import type { GroupFormValues } from "@/lib/validation/groups";
+import {
+  ascendingTimestampFilter,
+  descendingTimestampFilter,
+  type TimestampCursor,
+} from "@/lib/data/keyset-pagination";
 
 export const GROUP_PAGE_SIZE = 30;
 
@@ -19,14 +24,24 @@ export type InvitationWithGroup = GroupInvitation & {
   groups: Pick<Group, "id" | "slug" | "name" | "avatar_url" | "visibility" | "archived_at"> | null;
 };
 
-export async function listVisibleGroups(userId: string | null, offset = 0) {
+export async function listVisibleGroups(
+  userId: string | null,
+  cursor?: TimestampCursor,
+) {
   const supabase = getSupabaseBrowserClient();
+  let groupsQuery = supabase
+    .from("groups")
+    .select("*")
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(101);
+  if (cursor) {
+    groupsQuery = groupsQuery.or(
+      descendingTimestampFilter("updated_at", "id", cursor),
+    );
+  }
   const [groupsResult, membershipsResult, invitationsResult] = await Promise.all([
-    supabase
-      .from("groups")
-      .select("*")
-      .order("updated_at", { ascending: false })
-      .range(offset, offset + 100),
+    groupsQuery,
     userId
       ? supabase.from("group_members").select("*").eq("user_id", userId).eq("status", "active").limit(500)
       : Promise.resolve({ data: [], error: null }),
@@ -115,7 +130,11 @@ export async function getMyGroupRole(groupId: string, userId: string | null) {
   return data?.role ?? null;
 }
 
-export async function listGroupEntries(groupId: string, limit = GROUP_PAGE_SIZE, cursor?: string) {
+export async function listGroupEntries(
+  groupId: string,
+  limit = GROUP_PAGE_SIZE,
+  cursor?: TimestampCursor,
+) {
   const supabase = getSupabaseBrowserClient();
   let query = supabase
     .from("map_entries")
@@ -123,8 +142,13 @@ export async function listGroupEntries(groupId: string, limit = GROUP_PAGE_SIZE,
     .eq("group_id", groupId)
     .eq("visibility", "group")
     .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(limit + 1);
-  if (cursor) query = query.lt("created_at", cursor);
+  if (cursor) {
+    query = query.or(
+      descendingTimestampFilter("created_at", "id", cursor),
+    );
+  }
   const { data, error } = await query;
   if (error) throw error;
   return {
@@ -134,7 +158,11 @@ export async function listGroupEntries(groupId: string, limit = GROUP_PAGE_SIZE,
   };
 }
 
-export async function listGroupMembers(groupId: string, limit = GROUP_PAGE_SIZE, cursor?: string) {
+export async function listGroupMembers(
+  groupId: string,
+  limit = GROUP_PAGE_SIZE,
+  cursor?: TimestampCursor,
+) {
   const supabase = getSupabaseBrowserClient();
   let query = supabase
     .from("group_members")
@@ -142,8 +170,13 @@ export async function listGroupMembers(groupId: string, limit = GROUP_PAGE_SIZE,
     .eq("group_id", groupId)
     .eq("status", "active")
     .order("joined_at", { ascending: true })
+    .order("user_id", { ascending: true })
     .limit(limit + 1);
-  if (cursor) query = query.gt("joined_at", cursor);
+  if (cursor) {
+    query = query.or(
+      ascendingTimestampFilter("joined_at", "user_id", cursor),
+    );
+  }
   const { data, error, count } = await query;
   if (error) throw error;
   return {
@@ -204,7 +237,11 @@ export async function searchProfiles(keyword: string) {
   return data;
 }
 
-export async function listMyInvitations(userId: string, cursor?: string, limit = 20) {
+export async function listMyInvitations(
+  userId: string,
+  cursor?: TimestampCursor,
+  limit = 20,
+) {
   const supabase = getSupabaseBrowserClient();
   let query = supabase
     .from("group_invitations")
@@ -212,8 +249,13 @@ export async function listMyInvitations(userId: string, cursor?: string, limit =
     .eq("invitee_id", userId)
     .eq("status", "pending")
     .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
     .limit(limit + 1);
-  if (cursor) query = query.lt("created_at", cursor);
+  if (cursor) {
+    query = query.or(
+      descendingTimestampFilter("created_at", "id", cursor),
+    );
+  }
   const { data, error } = await query;
   if (error) throw error;
   return {

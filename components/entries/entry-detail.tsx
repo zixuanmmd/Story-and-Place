@@ -66,7 +66,7 @@ export function EntryDetail({
           <button className="text-danger-button" type="button" onClick={onDelete} disabled={busy}>删除</button>
         </div>
       ) : null}
-      <EntrySocial entry={entry} />
+      <EntrySocial key={entry.id} entry={entry} />
     </article>
   );
 }

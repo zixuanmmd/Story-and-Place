@@ -13,6 +13,18 @@ describe("群组与社交校验", () => {
     };
     expect(groupFormSchema.safeParse(base).success).toBe(true);
     expect(groupFormSchema.safeParse({ ...base, slug: "../admin" }).success).toBe(false);
+    expect(
+      groupFormSchema.safeParse({
+        ...base,
+        avatar_url: "https://images.example/group.jpg",
+      }).success,
+    ).toBe(true);
+    expect(
+      groupFormSchema.safeParse({
+        ...base,
+        avatar_url: "http://images.example/group.jpg",
+      }).success,
+    ).toBe(false);
   });
 
   it("拒绝空白和超长评论", () => {
@@ -35,4 +47,3 @@ describe("群组与社交校验", () => {
     }).success).toBe(false);
   });
 });
-

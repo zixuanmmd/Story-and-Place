@@ -18,6 +18,8 @@ import type { Group, GroupRole, MapEntryWithProfile } from "@/types/database";
 import { ReportDialog } from "@/components/social/report-dialog";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { GroupStoryRoutes } from "@/components/routes/group-story-routes";
+import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 
 const GroupMap = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -143,10 +145,15 @@ function GroupDetailForScope({ slug }: { slug: string }) {
   };
   const loadMoreEntries = async () => {
     if (!group || !entries.length) return;
+    const lastEntry = entries.at(-1);
+    if (!lastEntry) return;
     setLoadingMore(true);
     try {
-      const page = await listGroupEntries(group.id, 20, entries.at(-1)?.created_at);
-      setEntries((current) => [...current, ...page.entries]);
+      const page = await listGroupEntries(group.id, 20, {
+        timestamp: lastEntry.created_at,
+        id: lastEntry.id,
+      });
+      setEntries((current) => mergeUniqueById(current, page.entries));
       setHasMoreEntries(page.hasMore);
     } catch (error) {
       setStatus(getFriendlyError(error, "更多群组记录加载失败。"));
@@ -174,37 +181,41 @@ function GroupDetailForScope({ slug }: { slug: string }) {
                 {role && !group.archived_at ? <Link className="primary-button nav-link" href={`/?group=${group.id}`}>发布群组记录</Link> : null}
                 {role && role !== "owner" ? <button className="secondary-button" type="button" onClick={() => void leave()}>退出群组</button> : null}
                 {role ? <Link className="secondary-button nav-link" href={`/groups/${group.slug}/members`}>成员</Link> : null}
+                {role ? <Link className="secondary-button nav-link" href={`/groups/${group.slug}/timeline`}>时间线</Link> : null}
                 {role === "owner" || role === "admin" ? <Link className="secondary-button nav-link" href={`/groups/${group.slug}/settings`}>设置</Link> : null}
                 <ReportDialog targetType="group" targetId={group.id} />
               </div>
             </section>
             {status ? <div className="inline-error" role="status">{status}</div> : null}
             {role ? (
-              <div className="group-content-layout">
-                <section className="group-map-panel" aria-label="群组地图">
-                  <GroupMap
-                    entries={entries}
-                    selectedEntryId={selectedId}
-                    draftCoordinates={null}
-                    onMapClick={() => setStatus("请使用“发布群组记录”按钮后，在首页地图选择位置。")}
-                    onEntryClick={(entry) => setSelectedId(entry.id)}
-                    onTileError={() => setStatus("地图瓦片加载失败，请检查网络。")}
-                    onLocationError={setStatus}
-                    onViewChange={() => undefined}
-                  />
-                </section>
-                <section className="group-entry-list">
-                  <h2>群组记录</h2>
-                  {selected ? <article className="group-selected-story"><p className="eyebrow">地图中选中</p><h3>{selected.title}</h3><p>{selected.content}</p><Link href={`/?entry=${selected.id}`}>打开完整详情</Link></article> : null}
-                  {entries.length ? entries.map((entry) => (
-                    <button key={entry.id} type="button" className="group-entry-row" onClick={() => setSelectedId(entry.id)}>
-                      <PlaceCategoryIcon category={entry.place_category_slug} />
-                      <span><strong>{entry.title}</strong><small>{getCategoryLabel(entry.place_category_slug)} · {entry.time_label}</small></span>
-                    </button>
-                  )) : <div className="small-empty">群组里还没有地点故事。</div>}
-                  {hasMoreEntries ? <button className="secondary-button" disabled={loadingMore} type="button" onClick={() => void loadMoreEntries()}>{loadingMore ? "加载中…" : "加载更多记录"}</button> : null}
-                </section>
-              </div>
+              <>
+                <div className="group-content-layout">
+                  <section className="group-map-panel" aria-label="群组地图">
+                    <GroupMap
+                      entries={entries}
+                      selectedEntryId={selectedId}
+                      draftCoordinates={null}
+                      onMapClick={() => setStatus("请使用“发布群组记录”按钮后，在首页地图选择位置。")}
+                      onEntryClick={(entry) => setSelectedId(entry.id)}
+                      onTileError={() => setStatus("地图瓦片加载失败，请检查网络。")}
+                      onLocationError={setStatus}
+                      onViewChange={() => undefined}
+                    />
+                  </section>
+                  <section className="group-entry-list">
+                    <h2>群组记录</h2>
+                    {selected ? <article className="group-selected-story"><p className="eyebrow">地图中选中</p><h3>{selected.title}</h3><p>{selected.content}</p><Link href={`/?entry=${selected.id}`}>打开完整详情</Link></article> : null}
+                    {entries.length ? entries.map((entry) => (
+                      <button key={entry.id} type="button" className="group-entry-row" onClick={() => setSelectedId(entry.id)}>
+                        <PlaceCategoryIcon category={entry.place_category_slug} />
+                        <span><strong>{entry.title}</strong><small>{getCategoryLabel(entry.place_category_slug)} · {entry.time_label}</small></span>
+                      </button>
+                    )) : <div className="small-empty">群组里还没有地点故事。</div>}
+                    {hasMoreEntries ? <button className="secondary-button" disabled={loadingMore} type="button" onClick={() => void loadMoreEntries()}>{loadingMore ? "加载中…" : "加载更多记录"}</button> : null}
+                  </section>
+                </div>
+                <GroupStoryRoutes groupId={group.id} groupSlug={group.slug} />
+              </>
             ) : (
               <div className="content-state"><h2>{group.visibility === "private" ? "这是一个私密群组" : "加入后阅读群组故事"}</h2><p>{group.visibility === "private" ? "只有收到邀请并接受后，才能查看成员和群组记录。" : "群组记录只对有效成员开放。"}</p></div>
             )}

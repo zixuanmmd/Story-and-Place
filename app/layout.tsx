@@ -1,12 +1,16 @@
 import type { Metadata } from "next";
 import { AppProviders } from "@/components/providers/app-providers";
+import { resolveServerSiteUrl } from "@/lib/config/site-url";
 import "./globals.css";
 import "./error-states.css";
+import "./timeline-routes.css";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(
-    process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000",
-  ),
+  metadataBase: resolveServerSiteUrl({
+    publicSiteUrl: process.env.NEXT_PUBLIC_SITE_URL,
+    vercelProductionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    vercelUrl: process.env.VERCEL_URL,
+  }),
   title: {
     default: "故事情感地图",
     template: "%s｜故事情感地图",

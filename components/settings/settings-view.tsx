@@ -6,8 +6,16 @@ import { useForm, useWatch } from "react-hook-form";
 import { AppHeader } from "@/components/navigation/app-header";
 import { ProtectedState } from "@/components/layout/protected-state";
 import { useAuth } from "@/components/providers/auth-provider";
-import { saveProfile } from "@/lib/data/profiles";
-import { getFriendlyError } from "@/lib/errors";
+import { isDisplayNameAvailable, saveProfile } from "@/lib/data/profiles";
+import {
+  getErrorCode,
+  getFriendlyError,
+  reportOperationalError,
+} from "@/lib/errors";
+import {
+  DISPLAY_NAME_TAKEN_MESSAGE,
+  normalizeDisplayNameForStorage,
+} from "@/lib/profile/display-name";
 import { profileSchema, type ProfileFormValues } from "@/lib/validation/profile";
 
 export function SettingsView() {
@@ -35,10 +43,31 @@ export function SettingsView() {
     if (!user) return;
     setNotice(null);
     try {
-      await saveProfile(user.id, values);
+      const displayName = normalizeDisplayNameForStorage(values.display_name);
+      form.setValue("display_name", displayName);
+      const available = await isDisplayNameAvailable(displayName);
+      if (!available) {
+        form.setError("display_name", {
+          type: "validate",
+          message: DISPLAY_NAME_TAKEN_MESSAGE,
+        });
+        form.setFocus("display_name");
+        return;
+      }
+
+      await saveProfile(user.id, { ...values, display_name: displayName });
       await refreshProfile();
-      setNotice("个人资料已保存。 ");
+      setNotice("个人资料已保存。");
     } catch (error) {
+      reportOperationalError(error, "profile:update");
+      if (getErrorCode(error) === "23505") {
+        form.setError("display_name", {
+          type: "validate",
+          message: DISPLAY_NAME_TAKEN_MESSAGE,
+        });
+        form.setFocus("display_name");
+        return;
+      }
       setNotice(getFriendlyError(error, "个人资料保存失败，请稍后重试。"));
     }
   });
@@ -46,7 +75,7 @@ export function SettingsView() {
   let content;
   if (!configured) content = <ProtectedState kind="config" />;
   else if (loading) content = <ProtectedState kind="loading" />;
-  else if (!user) content = <ProtectedState kind="signed-out" />;
+  else if (!user) content = <ProtectedState kind="signed-out" nextPath="/settings" signedOutDescription="登录后可以修改显示名、简介和头像地址。" />;
   else {
     content = (
       <section className="settings-card">

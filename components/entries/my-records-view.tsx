@@ -157,7 +157,7 @@ function MyRecordsForScope({
   let content;
   if (!configured) content = <ProtectedState kind="config" />;
   else if (authLoading) content = <ProtectedState kind="loading" />;
-  else if (!user) content = <ProtectedState kind="signed-out" />;
+  else if (!user) content = <ProtectedState kind="signed-out" nextPath="/my-records" />;
   else {
     content = (
       <>

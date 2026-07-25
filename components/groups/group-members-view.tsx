@@ -95,12 +95,21 @@ function GroupMembersForScope({ slug }: { slug: string }) {
   };
   const loadMore = async () => {
     if (!group) return;
-    const cursor = members.at(-1)?.joined_at;
-    if (!cursor) return;
+    const lastMember = members.at(-1);
+    if (!lastMember?.joined_at) return;
     setBusy(true);
     try {
-      const page = await listGroupMembers(group.id, 30, cursor);
-      setMembers((current) => [...current, ...page.members]);
+      const page = await listGroupMembers(group.id, 30, {
+        timestamp: lastMember.joined_at,
+        id: lastMember.user_id,
+      });
+      setMembers((current) => {
+        const known = new Set(current.map((member) => member.user_id));
+        return [
+          ...current,
+          ...page.members.filter((member) => !known.has(member.user_id)),
+        ];
+      });
       setHasMore(page.hasMore);
     } catch (error) {
       setStatus(getFriendlyError(error, "更多成员加载失败。"));

@@ -6,6 +6,7 @@ import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
 import { listMyInvitations, respondGroupInvitation, type InvitationWithGroup } from "@/lib/data/groups";
 import { getFriendlyError } from "@/lib/errors";
+import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 
 export function GroupInvitationsView() {
   const { user } = useAuth();
@@ -46,12 +47,17 @@ function GroupInvitationsForScope() {
   };
   const loadMore = async () => {
     if (!user) return;
-    const cursor = invitations.at(-1)?.created_at;
-    if (!cursor) return;
+    const lastInvitation = invitations.at(-1);
+    if (!lastInvitation) return;
     setBusyId("more");
     try {
-      const page = await listMyInvitations(user.id, cursor);
-      setInvitations((current) => [...current, ...page.invitations]);
+      const page = await listMyInvitations(user.id, {
+        timestamp: lastInvitation.created_at,
+        id: lastInvitation.id,
+      });
+      setInvitations((current) =>
+        mergeUniqueById(current, page.invitations),
+      );
       setHasMore(page.hasMore);
     } catch (error) {
       setStatus(getFriendlyError(error, "更多邀请加载失败。"));

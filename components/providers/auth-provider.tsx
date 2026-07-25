@@ -25,6 +25,7 @@ type AuthContextValue = {
   loading: boolean;
   configured: boolean;
   authError: string | null;
+  refreshAuth: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
 };
@@ -71,6 +72,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await loadProfile(session.user.id);
     }
   }, [loadProfile, session]);
+
+  const refreshAuth = useCallback(async () => {
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+
+      const nextUserId = data.session?.user.id ?? null;
+      activeUserId.current = nextUserId;
+      profileRequestSequence.current += 1;
+      setProfileState({ userId: nextUserId, profile: null });
+      setSession(data.session);
+      setAuthError(null);
+      setLoading(false);
+
+      if (nextUserId) {
+        await loadProfile(nextUserId);
+      }
+    } catch (error) {
+      setAuthError(getFriendlyError(error));
+      setLoading(false);
+    }
+  }, [loadProfile]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -132,10 +156,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       configured: isSupabaseConfigured,
       authError,
+      refreshAuth,
       refreshProfile,
       signOut,
     }),
-    [authError, loading, profile, refreshProfile, session, signOut],
+    [
+      authError,
+      loading,
+      profile,
+      refreshAuth,
+      refreshProfile,
+      session,
+      signOut,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

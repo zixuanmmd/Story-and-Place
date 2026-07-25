@@ -18,7 +18,7 @@ export function NewGroupView() {
       <AppHeader />
       <div className="narrow-container">
         <div className="page-heading"><div><p className="eyebrow">NEW CIRCLE</p><h1>创建群组</h1><p>为一群共享地点与记忆的人，留出一块安静空间。</p></div></div>
-        {!configured ? <ProtectedState kind="config" /> : loading ? <ProtectedState kind="loading" /> : !user ? <ProtectedState kind="signed-out" /> : (
+        {!configured ? <ProtectedState kind="config" /> : loading ? <ProtectedState kind="loading" /> : !user ? <ProtectedState kind="signed-out" nextPath="/groups/new" signedOutDescription="登录后可以创建公开或私密群组。" /> : (
           <>
             {error ? <div className="inline-error" role="alert">{error}</div> : null}
             <GroupForm

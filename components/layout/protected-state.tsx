@@ -1,10 +1,17 @@
 import Link from "next/link";
+import { getAuthPageHref } from "@/lib/navigation/safe-redirect";
 
 type ProtectedStateProps = {
   kind: "loading" | "signed-out" | "config";
+  signedOutDescription?: string;
+  nextPath?: string;
 };
 
-export function ProtectedState({ kind }: ProtectedStateProps) {
+export function ProtectedState({
+  kind,
+  signedOutDescription = "登录后可以管理自己的公开和私密记录。",
+  nextPath,
+}: ProtectedStateProps) {
   if (kind === "loading") {
     return <div className="content-state" role="status"><span className="loading-dot" />正在读取账户信息…</div>;
   }
@@ -24,8 +31,17 @@ export function ProtectedState({ kind }: ProtectedStateProps) {
     <div className="content-state">
       <span className="state-symbol" aria-hidden="true">▣</span>
       <h2>登录后才能查看这里</h2>
-      <p>登录后可以管理自己的公开和私密记录。</p>
-      <Link className="primary-button nav-link" href="/login">前往登录</Link>
+      <p>{signedOutDescription}</p>
+      <Link
+        className="primary-button nav-link"
+        href={getAuthPageHref(
+          "/login",
+          nextPath,
+          "http://local.story-map",
+        )}
+      >
+        前往登录
+      </Link>
     </div>
   );
 }
