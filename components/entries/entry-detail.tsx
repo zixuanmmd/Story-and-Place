@@ -5,10 +5,15 @@ import type { MapEntryWithProfile } from "@/types/database";
 import { TIME_PRECISION_LABELS, VISIBILITY_LABELS } from "@/lib/validation/entry";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { EntrySocial } from "@/components/social/entry-social";
+import { EntryTags } from "@/components/entries/entry-tags";
+import { EntryParticipants } from "@/components/entries/entry-participants";
+import { EntryEditHistory } from "@/components/entries/entry-edit-history";
 
 type EntryDetailProps = {
   entry: MapEntryWithProfile;
   isOwner: boolean;
+  canEdit: boolean;
+  canCollaborate: boolean;
   busy?: boolean;
   onClose: () => void;
   onEdit: () => void;
@@ -26,6 +31,8 @@ function formatTimestamp(value: string) {
 export function EntryDetail({
   entry,
   isOwner,
+  canEdit,
+  canCollaborate,
   busy = false,
   onClose,
   onEdit,
@@ -46,6 +53,7 @@ export function EntryDetail({
       <h2>{entry.title}</h2>
       <p className="detail-category"><PlaceCategoryIcon category={entry.place_category_slug} /> {getCategoryLabel(entry.place_category_slug)}</p>
       {entry.place_name ? <p className="detail-place">⌖ {entry.place_name}</p> : null}
+      <EntryTags entry={entry} />
       <div className="detail-content">{entry.content}</div>
 
       <dl className="detail-meta">
@@ -57,15 +65,21 @@ export function EntryDetail({
         <div><dt>更新于</dt><dd>{formatTimestamp(entry.updated_at)}</dd></div>
       </dl>
 
-      {isOwner ? (
+      {canEdit || isOwner ? (
         <div className="owner-actions">
-          <button className="secondary-button" type="button" onClick={onEdit} disabled={busy}>编辑</button>
-          <button className="secondary-button" type="button" onClick={onToggleVisibility} disabled={busy}>
-            {busy ? "正在更新…" : entry.visibility === "public" ? "设为私密" : "设为公开"}
-          </button>
-          <button className="text-danger-button" type="button" onClick={onDelete} disabled={busy}>删除</button>
+          {canEdit ? <button className="secondary-button" type="button" onClick={onEdit} disabled={busy}>编辑</button> : null}
+          {isOwner ? (
+            <>
+              <button className="secondary-button" type="button" onClick={onToggleVisibility} disabled={busy}>
+                {busy ? "正在更新…" : entry.visibility === "public" ? "设为私密" : "设为公开"}
+              </button>
+              <button className="text-danger-button" type="button" onClick={onDelete} disabled={busy}>删除</button>
+            </>
+          ) : null}
         </div>
       ) : null}
+      {isOwner ? <EntryParticipants entryId={entry.id} /> : null}
+      {canCollaborate ? <EntryEditHistory entryId={entry.id} /> : null}
       <EntrySocial key={entry.id} entry={entry} />
     </article>
   );

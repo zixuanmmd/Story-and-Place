@@ -24,6 +24,7 @@ import { VISIBILITY_LABELS } from "@/lib/validation/entry";
 import type { MapEntryWithProfile } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 export function MyRecordsView() {
   const { user, loading: authLoading, configured } = useAuth();
@@ -75,6 +76,12 @@ function MyRecordsForScope({
     errorFallback: "我的记录加载失败，请稍后重试。",
   });
   const { entries, loading, error, reload: reloadEntries } = entryQuery;
+  useEntryRealtime({
+    enabled: configured && Boolean(user),
+    scopeKey: `records-${user?.id ?? "anon"}`,
+    includeCollaboration: true,
+    onChange: reloadEntries,
+  });
 
   useEffect(() => {
     if (!user || !configured) return;

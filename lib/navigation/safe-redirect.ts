@@ -9,6 +9,7 @@ const ALLOWED_PATHS = new Set([
   "/timeline",
   "/routes",
   "/routes/new",
+  "/entry-invitations",
 ]);
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 const UUID_PATH_VALUE =
@@ -19,6 +20,7 @@ const GROUP_PATH = new RegExp(
 );
 const USER_PATH = new RegExp(`^/users/${UUID_PATH_VALUE}(?:/timeline)?$`, "i");
 const STORY_ROUTE_PATH = /^\/routes\/[a-f0-9]{20}(?:\/edit)?$/;
+const TAG_PATH = /^\/tags\/[a-f0-9]{20}$/;
 
 function hasAllowedQuery(url: URL) {
   if (url.pathname !== "/") return url.search === "";
@@ -55,7 +57,8 @@ function hasAllowedPath(url: URL) {
     ALLOWED_PATHS.has(url.pathname) ||
     GROUP_PATH.test(url.pathname) ||
     USER_PATH.test(url.pathname) ||
-    STORY_ROUTE_PATH.test(url.pathname)
+    STORY_ROUTE_PATH.test(url.pathname) ||
+    TAG_PATH.test(url.pathname)
   );
 }
 

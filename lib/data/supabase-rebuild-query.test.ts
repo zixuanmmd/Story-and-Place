@@ -17,6 +17,7 @@ const migrationNames = [
   "202607250001_timelines_story_routes.sql",
   "202607250002_group_membership_hardening.sql",
   "202607250003_group_creator_select_policy.sql",
+  "202607260001_entry_participants_tags.sql",
 ];
 
 describe("Supabase 完整重建 Query", () => {
@@ -57,6 +58,8 @@ describe("Supabase 完整重建 Query", () => {
       "public.map_entries",
       "public.groups",
       "public.story_routes",
+      "public.entry_participants",
+      "public.tags",
     ]) {
       expect(rebuildQuery).toContain(`to_regclass('${relation}')`);
     }

@@ -26,6 +26,7 @@ import {
   type TimelineFilters,
 } from "@/lib/timeline/timeline";
 import type { MapEntryWithProfile, PlaceCategorySlug } from "@/types/database";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 const TimelineMap = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -139,6 +140,14 @@ function TimelineForScope(props: TimelineViewProps) {
       if (requestSequence.current === requestId) setLoading(false);
     }
   }, [filters, scope]);
+  useEntryRealtime({
+    enabled: configured && Boolean(scope),
+    scopeKey: `timeline-${user?.id ?? "anon"}-${mode}-${groupSlug ?? targetUserId ?? "mine"}`,
+    includeCollaboration: Boolean(user),
+    onChange: () => {
+      void load(0, false);
+    },
+  });
 
   useEffect(() => {
     if (!scope) return;

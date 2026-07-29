@@ -15,6 +15,7 @@ const migrationNames = [
   "202607250001_timelines_story_routes.sql",
   "202607250002_group_membership_hardening.sql",
   "202607250003_group_creator_select_policy.sql",
+  "202607260001_entry_participants_tags.sql",
 ];
 const outputPath = resolve(
   projectRoot,
@@ -143,6 +144,8 @@ select
   to_regclass('public.map_entries') is not null as map_entries_ready,
   to_regclass('public.groups') is not null as groups_ready,
   to_regclass('public.story_routes') is not null as story_routes_ready,
+  to_regclass('public.entry_participants') is not null as entry_participants_ready,
+  to_regclass('public.tags') is not null as tags_ready,
   (
     select count(*)::integer
     from public.profiles

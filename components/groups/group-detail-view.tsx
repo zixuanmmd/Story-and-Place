@@ -20,6 +20,7 @@ import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { GroupStoryRoutes } from "@/components/routes/group-story-routes";
 import { mergeUniqueById } from "@/lib/data/keyset-pagination";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 const GroupMap = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -78,6 +79,12 @@ function GroupDetailForScope({ slug }: { slug: string }) {
       setLoading(false);
     }
   }, [authLoading, slug, user]);
+  useEntryRealtime({
+    enabled: Boolean(group),
+    scopeKey: `group-${slug}-${user?.id ?? "anon"}`,
+    includeCollaboration: Boolean(user),
+    onChange: load,
+  });
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);

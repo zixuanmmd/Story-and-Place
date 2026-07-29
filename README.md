@@ -38,6 +38,8 @@ npm start
    - `supabase/migrations/202607240001_unique_display_names_and_schema_refresh.sql`
    - `supabase/migrations/202607250001_timelines_story_routes.sql`
    - `supabase/migrations/202607250002_group_membership_hardening.sql`
+   - `supabase/migrations/202607250003_group_creator_select_policy.sql`
+   - `supabase/migrations/202607260001_entry_participants_tags.sql`
 3. 在开发期按需配置邮箱确认和 `http://localhost:3000` 回调地址。
 4. 从项目 API 设置复制 Project URL 与 anon/publishable key。
 
@@ -48,7 +50,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 ```
 
-第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六份 migration 修复公开群组重复加入导致角色降级的问题，用延迟数据库约束保证每个保留群组始终至少有一个有效 owner，并显式撤销匿名用户对认证 RPC 的执行权限；若历史群组已经没有 owner，会确定性地恢复原创建者为 owner，不删除成员或内容。旧记录不会被删除或重写，其地点分类安全回填为 `other`。
+第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。旧记录不会被删除或重写，其地点分类安全回填为 `other`。
 
 ## 新增页面
 
@@ -62,6 +64,8 @@ supabase db push
 - `/users/[id]/timeline`、`/groups/[slug]/timeline`：公开用户时间线与成员专属群组时间线。
 - `/routes`、`/routes/new`：路线列表和路线编辑器。
 - `/routes/[shareSlug]`、`/routes/[shareSlug]/edit`：权限安全的路线分享与编辑。
+- `/entry-invitations`：接受或拒绝共同经历邀请。
+- `/tags/[slug]`：只聚合当前访问者有权读取的标签记录。
 
 ## 环境变量
 
@@ -137,10 +141,12 @@ order by created_at, id;
 
 本地环境指向 Supabase project ref `bmzsabgzzrwekghdceyj`。2026-07-25 的匿名只读检查确认 `profiles`、`groups` 和昵称可用性 RPC 已存在，说明第三、第四份 migration 已可由 PostgREST 读取；`story_routes` 和 `story_route_items` 仍返回 `PGRST205`，第五份时间线/路线 migration 尚未执行。当前机器没有 Supabase CLI、Docker 或 `psql`，因此没有自动推送。
 
-当前项目只需在 SQL Editor 按顺序执行：
+远程项目若仍停留在当时检查状态，需要在 SQL Editor 按顺序执行尚未应用的增量 migration：
 
 1. `supabase/migrations/202607250001_timelines_story_routes.sql`
 2. `supabase/migrations/202607250002_group_membership_hardening.sql`
+3. `supabase/migrations/202607250003_group_creator_select_policy.sql`
+4. `supabase/migrations/202607260001_entry_participants_tags.sql`
 
 不要在远程项目执行 `supabase db reset`，也不要重复手工回放已经执行的旧 migration。第五份 migration 会检查前置群组结构，缺失时明确失败，避免部分功能看似成功但数据库边界没有建立；第六份必须在第五份成功后执行。执行后可验证：
 
@@ -205,7 +211,7 @@ supabase gen types typescript --local > types/database.generated.ts
 
 时间线通过 `get_timeline_entries` 由数据库完成作用域、RLS、筛选、稳定排序和每页 50 条的分页，浏览器不会先取回无权内容再隐藏。排序优先使用 `occurred_year`、`occurred_date` 和 `occurred_local`；仅当“大致时间”的显示文本包含边界清楚的四位年份时才参与对应年份分组。无法可靠判断年份的记录独立放在“时间未定”，不会被伪造成 1 月 1 日。
 
-- `/timeline` 只对登录用户开放，读取自己的公开、私密记录以及仍有成员资格的群组记录。
+- `/timeline` 只对登录用户开放，读取自己的记录和已接受的共同经历；群组记录仍要求有效成员资格。
 - `/users/[id]/timeline` 永远只查询该用户的公开记录。
 - `/groups/[slug]/timeline` 只对当前有效成员开放，只查询该群组的 `group` 记录。
 - 地图标记与时间线卡片双向选中；筛选参数经过白名单和 Zod 校验。
@@ -229,12 +235,13 @@ supabase gen types typescript --local > types/database.generated.ts
 
 `map_entries`：
 
-- `SELECT`：任何人可读公开记录；作者可读自己的全部记录；有效群组成员可读对应群组记录。
+- `SELECT`：任何人可读公开记录；作者可读自己的全部记录；accepted 共同经历者可读对应私密记录；有效群组成员可读对应群组记录。
 - `INSERT`：只允许登录用户，且 `user_id = auth.uid()`。
 - `UPDATE`、`DELETE`：只允许作者本人。
 - `group` 记录必须关联一个未归档群组，作者必须是有效成员；其他可见性不允许残留 `group_id`。
 - 客户端不能写 `id`、`created_at`、`updated_at`、`occurred_at`；记录创建后也不能修改 `user_id`。
 - 列级 `GRANT` 与不可变字段触发器构成双层保护；时间触发器维护可推导字段并验证 IANA 时区。
+- 共同经历者只能通过 `update_entry` RPC 修改明确授权的逻辑字段，不能修改可见性、`group_id`、评论设置或删除记录；每次实际变化由数据库触发器写入不可直接修改的 `entry_edit_logs`。
 
 `profiles` 被明确限定为公开资料表，只允许显示名、头像 URL、简介和审计时间。严禁未来直接加入邮箱、账单、封禁原因或其他私密账户字段；这些字段必须进入单独的、默认不公开且配置独立 RLS 的表。
 
@@ -251,15 +258,15 @@ supabase gen types typescript --local > types/database.generated.ts
 
 记录可见性矩阵：
 
-| 可见性 | 匿名 | 作者 | 其他登录用户 | 有效群组成员 | 点赞/评论 |
+| 可见性 | 匿名 | 作者 | accepted 共同经历者 | 其他登录用户 | 有效群组成员 |
 | --- | --- | --- | --- | --- | --- |
-| public | 可读 | 可读 | 可读 | 可读 | 登录后允许 |
-| private | 不可读 | 可读 | 不可读 | 不因成员身份授权 | 禁止 |
-| group | 不可读 | 可读 | 不可读 | 可读 | 成员允许 |
+| public | 可读 | 可读 | 可读 | 可读 | 可读 |
+| private | 不可读 | 可读 | 可读 | 不可读 | 不因成员身份授权 |
+| group | 不可读 | 需有效成员资格 | 还需有效成员资格 | 不可读 | 可读 |
 
 群组成员、角色、邀请响应、群主转移、评论软删除和群组评论管理都通过受限 RPC 变更。权限辅助函数使用 `security definer`、空 `search_path` 和完整 schema 名，避免 `group_members` RLS 自递归；客户端没有成员表的直接写权限。关注关系永不授予私密或群组记录权限。点赞、评论及其聚合只能随可见记录读取，成员失效后关联社交信息也不可见。
 
-`group_members` 被加入 Supabase Realtime publication。地图、群组详情、我的记录和信息流监听当前用户的成员状态；收到退出或移除事件时，先在本地同步移除对应群组数据并关闭详情，再重新查询。账户切换仍通过身份 `key` 整体卸载旧作用域，旧账户请求不能覆盖新账户状态。
+`group_members`、`map_entries`、`entry_participants`、`entry_tags` 和 `entry_edit_logs` 被加入 Supabase Realtime publication。地图、时间线、路线、群组详情、我的记录、信息流、邀请和标签页面收到可见变更后重新执行权限查询；成员退出、参与权限撤销后会清除已经失权的本地内容。账户切换仍通过身份 `key` 整体卸载旧作用域。
 
 ## RLS 集成验证
 
@@ -294,6 +301,13 @@ psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
   -f supabase/tests/story_routes_rls_assertions.sql
 ```
 
+`supabase/tests/entry_collaboration_rls_assertions.sql` 断言 pending 参与者不能读取私密事件、accepted 后才可读取和按字段编辑、参与者不能改变访问设置或删除、群组邀请要求有效成员、审计日志由数据库生成，以及标签聚合不会泄露私密关联：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/entry_collaboration_rls_assertions.sql
+```
+
 `supabase/tests/rls_manual_verification.sql` 保留了已有人工角色模拟说明。SQL Editor 默认高权限角色会绕过 RLS，不能把普通 SQL Editor 查询当作客户端权限验证。
 
 ## 浏览器端到端验证矩阵
@@ -314,6 +328,9 @@ psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
 14. 把其中一个公开节点改为私密；原分享链接应立即不再向匿名用户返回路线或地点数据。
 15. 创建群组路线；非成员只能看到通用无权限页面，成员退出后路线节点应立即不可读。
 16. 使用跨 ±180° 的两个地点验证路线不会画出横跨整张世界地图的错误长线。
+17. A 邀请 B 参与私密记录；B 接受前不能读取内容，接受后只能修改获授权字段，不能改变可见性、群组、评论设置或删除。
+18. B 接受后修改正文和标签，A/B 能看到数据库编辑日志；C 和匿名用户看不到私密标签聚合。
+19. 群组记录只能邀请有效成员；成员离组后即使参与状态仍为 accepted，也不能继续读取或编辑。
 
 ## 查询上限与透明度
 

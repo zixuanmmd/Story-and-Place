@@ -24,6 +24,8 @@ describe("getSafeRedirectPath", () => {
     ],
     ["/feed", "/feed"],
     ["/timeline", "/timeline"],
+    ["/entry-invitations", "/entry-invitations"],
+    ["/tags/0123456789abcdefabcd", "/tags/0123456789abcdefabcd"],
     ["/routes", "/routes"],
     ["/routes/new", "/routes/new"],
     ["/routes/0123456789abcdefabcd", "/routes/0123456789abcdefabcd"],

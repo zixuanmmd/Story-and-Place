@@ -11,6 +11,7 @@ import { getFriendlyError } from "@/lib/errors";
 import type { FeedEntry } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 function FeedLike({
   entry,
@@ -66,6 +67,14 @@ function FeedForScope() {
       setLoading(false);
     }
   }, [entries, user]);
+  useEntryRealtime({
+    enabled: configured && Boolean(user),
+    scopeKey: `feed-${user?.id ?? "anon"}`,
+    includeCollaboration: true,
+    onChange: () => {
+      void load(false);
+    },
+  });
   useEffect(() => {
     if (!user) return;
     const timer = window.setTimeout(() => void load(false), 0);
