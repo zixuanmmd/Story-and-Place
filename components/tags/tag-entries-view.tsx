@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { EntryTags } from "@/components/entries/entry-tags";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -16,35 +16,47 @@ import type { MapEntryWithProfile } from "@/types/database";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 export function TagEntriesView({ slug }: { slug: string }) {
-  const { user, configured } = useAuth();
+  const { dataScope } = useAuth();
+  return <TagEntriesForScope key={`${dataScope}:${slug}`} slug={slug} />;
+}
+
+function TagEntriesForScope({ slug }: { slug: string }) {
+  const { user, loading: authLoading, configured } = useAuth();
   const [summary, setSummary] = useState<VisibleTagSummary | null>(null);
   const [entries, setEntries] = useState<MapEntryWithProfile[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
   const load = useCallback(async (nextPage = 0, append = false) => {
-    if (!configured) return;
+    if (!configured || authLoading) return;
+    const requestId = ++requestSequence.current;
     setLoading(true);
     try {
       const [nextSummary, result] = await Promise.all([
         getVisibleTagSummary(slug),
         listEntriesByTag(slug, nextPage),
       ]);
+      if (requestSequence.current !== requestId) return;
       setSummary(nextSummary);
       setEntries((current) => append ? [...current, ...result.entries] : result.entries);
       setHasMore(result.hasMore);
       setPage(nextPage);
       setError(null);
     } catch (loadError) {
+      if (requestSequence.current !== requestId) return;
       setError(getFriendlyError(loadError, "标签记录暂时无法读取。"));
     } finally {
-      setLoading(false);
+      if (requestSequence.current === requestId) setLoading(false);
     }
-  }, [configured, slug]);
+  }, [authLoading, configured, slug]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      requestSequence.current += 1;
+      window.clearTimeout(timer);
+    };
   }, [load]);
   useEntryRealtime({
     enabled: configured,

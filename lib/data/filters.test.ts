@@ -33,6 +33,24 @@ function entry(
 }
 
 describe("entry filters", () => {
+  it("匿名作用域即使收到残留数据也只渲染公开记录", () => {
+    const publicEntry = entry("public");
+    const privateEntry = entry("private", { visibility: "private" });
+    const groupEntry = entry("group", {
+      visibility: "group",
+      group_id: "group-a",
+    });
+
+    expect(
+      filterEntries(
+        [publicEntry, privateEntry, groupEntry],
+        DEFAULT_ENTRY_FILTERS,
+        null,
+        null,
+      ),
+    ).toEqual([publicEntry]);
+  });
+
   it("日期筛选优先采用事件当地日期而不是 UTC 日期", () => {
     const local = entry("local", {
       occurred_local: "2024-01-02T00:30",

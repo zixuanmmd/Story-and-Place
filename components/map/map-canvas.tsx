@@ -46,6 +46,7 @@ function createEntryIcon(entry: MapEntryWithProfile, isSelected: boolean) {
 }
 
 type MapCanvasProps = {
+  scopeKey: string;
   entries: MapEntryWithProfile[];
   selectedEntryId: string | null;
   draftCoordinates: Coordinates | null;
@@ -149,6 +150,7 @@ function SelectedEntryController({ entry }: { entry: MapEntryWithProfile | null 
 }
 
 export function MapCanvas({
+  scopeKey,
   entries,
   selectedEntryId,
   draftCoordinates,
@@ -162,6 +164,7 @@ export function MapCanvas({
 
   return (
     <MapContainer
+      key={scopeKey}
       center={DEFAULT_CENTER}
       zoom={DEFAULT_ZOOM}
       minZoom={2}

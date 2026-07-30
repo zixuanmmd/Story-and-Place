@@ -28,12 +28,12 @@ const GroupMap = dynamic(
 );
 
 export function GroupDetailView({ slug }: { slug: string }) {
-  const { user } = useAuth();
-  return <GroupDetailForScope key={`${user?.id ?? "anon"}:${slug}`} slug={slug} />;
+  const { dataScope } = useAuth();
+  return <GroupDetailForScope key={`${dataScope}:${slug}`} slug={slug} />;
 }
 
 function GroupDetailForScope({ slug }: { slug: string }) {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, dataScope } = useAuth();
   const [group, setGroup] = useState<Group | null>(null);
   const [role, setRole] = useState<GroupRole | null>(null);
   const [entries, setEntries] = useState<MapEntryWithProfile[]>([]);
@@ -199,6 +199,8 @@ function GroupDetailForScope({ slug }: { slug: string }) {
                 <div className="group-content-layout">
                   <section className="group-map-panel" aria-label="群组地图">
                     <GroupMap
+                      key={dataScope}
+                      scopeKey={dataScope}
                       entries={entries}
                       selectedEntryId={selectedId}
                       draftCoordinates={null}
