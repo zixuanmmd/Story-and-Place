@@ -23,6 +23,8 @@ type AuthContextValue = {
   session: Session | null;
   profile: Profile | null;
   loading: boolean;
+  dataReady: boolean;
+  dataScope: string;
   configured: boolean;
   authError: string | null;
   refreshAuth: () => Promise<void>;
@@ -39,6 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     profile: Profile | null;
   }>({ userId: null, profile: null });
   const [loading, setLoading] = useState(isSupabaseConfigured);
+  const [signingOut, setSigningOut] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const activeUserId = useRef<string | null>(null);
   const profileRequestSequence = useRef(0);
@@ -135,25 +138,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadProfile]);
 
   const signOut = useCallback(async () => {
-    activeUserId.current = null;
-    profileRequestSequence.current += 1;
-    setSession(null);
-    setProfileState({ userId: null, profile: null });
-    const supabase = getSupabaseBrowserClient();
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    setSigningOut(true);
+    setAuthError(null);
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      activeUserId.current = null;
+      profileRequestSequence.current += 1;
+      setSession(null);
+      setProfileState({ userId: null, profile: null });
+      for (const key of [
+        "story-map-pending-entry",
+        "story-route-selection-v1",
+      ]) {
+        window.sessionStorage.removeItem(key);
+      }
+    } catch (error) {
+      setAuthError(getFriendlyError(error, "退出登录失败，请重试。"));
+      throw error;
+    } finally {
+      setSigningOut(false);
+    }
   }, []);
 
-  const currentUserId = session?.user.id ?? null;
+  const currentUserId = signingOut ? null : session?.user.id ?? null;
+  const dataReady = !loading && !signingOut;
+  const dataScope = signingOut
+    ? "auth-transition"
+    : currentUserId ?? "anon";
   const profile =
     profileState.userId === currentUserId ? profileState.profile : null;
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      user: session?.user ?? null,
-      session,
+      user: signingOut ? null : session?.user ?? null,
+      session: signingOut ? null : session,
       profile,
-      loading,
+      loading: loading || signingOut,
+      dataReady,
+      dataScope,
       configured: isSupabaseConfigured,
       authError,
       refreshAuth,
@@ -162,11 +187,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }),
     [
       authError,
+      dataReady,
+      dataScope,
       loading,
       profile,
       refreshAuth,
       refreshProfile,
       session,
+      signingOut,
       signOut,
     ],
   );

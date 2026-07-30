@@ -14,6 +14,14 @@ const authProvider = readFileSync(
   join(process.cwd(), "components/providers/auth-provider.tsx"),
   "utf8",
 );
+const appProviders = readFileSync(
+  join(process.cwd(), "components/providers/app-providers.tsx"),
+  "utf8",
+);
+const tagEntriesView = readFileSync(
+  join(process.cwd(), "components/tags/tag-entries-view.tsx"),
+  "utf8",
+);
 
 describe("registration and session contracts", () => {
   it("注册触发器以 auth user id 和显示名创建公开资料且不写入邮箱", () => {
@@ -33,15 +41,37 @@ describe("registration and session contracts", () => {
     expect(supabaseClient).toContain("autoRefreshToken: true");
   });
 
-  it("退出时先清空本地 session 和 profile 再调用 Supabase signOut", () => {
+  it("退出过渡期间先阻止数据渲染，凭证清除后才进入匿名作用域", () => {
+    const transitionStart = authProvider.indexOf("setSigningOut(true)");
+    const remoteSignOut = authProvider.indexOf("supabase.auth.signOut()");
     const sessionClear = authProvider.indexOf("setSession(null)");
     const profileClear = authProvider.indexOf(
       "setProfileState({ userId: null, profile: null })",
     );
-    const remoteSignOut = authProvider.indexOf("supabase.auth.signOut()");
+    const transitionEnd = authProvider.indexOf("setSigningOut(false)");
 
+    expect(transitionStart).toBeGreaterThan(-1);
+    expect(remoteSignOut).toBeGreaterThan(transitionStart);
+    expect(sessionClear).toBeGreaterThan(remoteSignOut);
     expect(sessionClear).toBeGreaterThan(-1);
     expect(profileClear).toBeGreaterThan(sessionClear);
-    expect(remoteSignOut).toBeGreaterThan(profileClear);
+    expect(transitionEnd).toBeGreaterThan(profileClear);
+    expect(authProvider).toContain('dataScope = signingOut');
+    expect(authProvider).toContain("dataReady = !loading && !signingOut");
+    expect(authProvider).toContain('"story-map-pending-entry"');
+    expect(authProvider).toContain('"story-route-selection-v1"');
+  });
+
+  it("认证数据边界在身份变化时重挂载客户端树并清空页面状态", () => {
+    expect(appProviders).toContain("if (!dataReady)");
+    expect(appProviders).toContain("<AuthScopedTree key={dataScope}>");
+  });
+
+  it("标签聚合按认证作用域重挂载并拒绝过期请求回写", () => {
+    expect(tagEntriesView).toContain(
+      'key={`${dataScope}:${slug}`}',
+    );
+    expect(tagEntriesView).toContain("requestSequence.current !== requestId");
+    expect(tagEntriesView).toContain("requestSequence.current += 1");
   });
 });
