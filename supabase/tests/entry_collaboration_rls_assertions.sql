@@ -179,6 +179,68 @@ select pg_temp.assert_true(
   'unrelated user must not see tags used only by a private entry'
 );
 
+do $$
+begin
+  begin
+    perform public.create_entry(
+      jsonb_build_object(
+        'title', '非成员不能创建群组记录',
+        'content', 'security-definer RPC 必须校验目标群组资格',
+        'latitude', 32,
+        'longitude', 122,
+        'occurred_year', 2026,
+        'time_precision', 'year',
+        'time_label', '2026 年',
+        'visibility', 'group',
+        'group_id', '84000000-0000-4000-8000-000000000004',
+        'place_category_slug', 'other',
+        'allow_comments', true
+      ),
+      '{}'::text[]
+    );
+    raise exception 'ASSERTION FAILED: non-member created a group entry through RPC';
+  exception when insufficient_privilege then
+    null;
+  end;
+end;
+$$;
+
+do $$
+declare
+  private_entry public.map_entries%rowtype;
+begin
+  private_entry := public.create_entry(
+    jsonb_build_object(
+      'title', '目标群组更新校验',
+      'content', '先创建私密记录，再尝试移入无权群组',
+      'latitude', 33,
+      'longitude', 123,
+      'occurred_year', 2026,
+      'time_precision', 'year',
+      'time_label', '2026 年',
+      'visibility', 'private',
+      'group_id', null,
+      'place_category_slug', 'other',
+      'allow_comments', true
+    ),
+    '{}'::text[]
+  );
+  begin
+    perform public.update_entry(
+      private_entry.id,
+      jsonb_build_object(
+        'visibility', 'group',
+        'group_id', '84000000-0000-4000-8000-000000000004'
+      ),
+      null
+    );
+    raise exception 'ASSERTION FAILED: non-member moved an entry into a group through RPC';
+  exception when insufficient_privilege then
+    null;
+  end;
+end;
+$$;
+
 reset role;
 set local role authenticated;
 select set_config(

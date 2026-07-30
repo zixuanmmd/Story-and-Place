@@ -16,6 +16,7 @@ const migrationNames = [
   "202607250002_group_membership_hardening.sql",
   "202607250003_group_creator_select_policy.sql",
   "202607260001_entry_participants_tags.sql",
+  "202607300001_entry_rpc_group_membership.sql",
 ];
 const outputPath = resolve(
   projectRoot,

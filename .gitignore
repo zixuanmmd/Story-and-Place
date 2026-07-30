@@ -15,6 +15,9 @@
 # test output
 /coverage
 
+# local Supabase CLI state
+supabase/.temp/
+
 # misc
 .DS_Store
 __MACOSX/

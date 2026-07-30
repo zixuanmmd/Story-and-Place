@@ -297,15 +297,6 @@ function MapExperienceForScope({
     () => filterEntries(membershipSafeEntries, filters, user?.id ?? null, bounds),
     [bounds, filters, membershipSafeEntries, user?.id],
   );
-  const selectedForIdentity = getRenderableSelectedEntry(
-    selectedEntry,
-    user?.id ?? null,
-  );
-  const renderableSelectedEntry =
-    canRenderGroupEntry(selectedForIdentity, activeGroupIds)
-      ? selectedForIdentity
-      : null;
-
   const startCreate = useCallback((coordinates: Coordinates) => {
     setSelectedEntry(null);
     setEditor({ mode: "create", coordinates });
@@ -367,6 +358,15 @@ function MapExperienceForScope({
   }, [selectedEntry, user]);
   const activeParticipation =
     myParticipation?.entry_id === selectedEntry?.id ? myParticipation : null;
+  const selectedForIdentity = getRenderableSelectedEntry(
+    selectedEntry,
+    user?.id ?? null,
+    activeParticipation?.status === "accepted",
+  );
+  const renderableSelectedEntry =
+    canRenderGroupEntry(selectedForIdentity, activeGroupIds)
+      ? selectedForIdentity
+      : null;
 
   const handleViewChange = useCallback(
     (center: Coordinates, nextBounds: MapBoundsValue) => {

@@ -40,6 +40,7 @@ npm start
    - `supabase/migrations/202607250002_group_membership_hardening.sql`
    - `supabase/migrations/202607250003_group_creator_select_policy.sql`
    - `supabase/migrations/202607260001_entry_participants_tags.sql`
+   - `supabase/migrations/202607300001_entry_rpc_group_membership.sql`
 3. 在开发期按需配置邮箱确认和 `http://localhost:3000` 回调地址。
 4. 从项目 API 设置复制 Project URL 与 anon/publishable key。
 
@@ -50,7 +51,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 ```
 
-第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。旧记录不会被删除或重写，其地点分类安全回填为 `other`。
+第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。第九份 migration 在 `create_entry` 与 `update_entry` 的 security-definer 边界内再次校验目标群组未归档且调用者仍是有效成员。旧记录不会被删除或重写，其地点分类安全回填为 `other`。
 
 ## 新增页面
 
@@ -139,16 +140,11 @@ order by created_at, id;
 
 ## 当前测试项目数据库初始化
 
-本地环境指向 Supabase project ref `bmzsabgzzrwekghdceyj`。2026-07-25 的匿名只读检查确认 `profiles`、`groups` 和昵称可用性 RPC 已存在，说明第三、第四份 migration 已可由 PostgREST 读取；`story_routes` 和 `story_route_items` 仍返回 `PGRST205`，第五份时间线/路线 migration 尚未执行。当前机器没有 Supabase CLI、Docker 或 `psql`，因此没有自动推送。
+本地环境指向 Supabase project ref `bmzsabgzzrwekghdceyj`。2026-07-30 已确认远程 migration 历史与仓库同步至 `202607260001_entry_participants_tags.sql`。发布本次修复前，只需继续应用：
 
-远程项目若仍停留在当时检查状态，需要在 SQL Editor 按顺序执行尚未应用的增量 migration：
+1. `supabase/migrations/202607300001_entry_rpc_group_membership.sql`
 
-1. `supabase/migrations/202607250001_timelines_story_routes.sql`
-2. `supabase/migrations/202607250002_group_membership_hardening.sql`
-3. `supabase/migrations/202607250003_group_creator_select_policy.sql`
-4. `supabase/migrations/202607260001_entry_participants_tags.sql`
-
-不要在远程项目执行 `supabase db reset`，也不要重复手工回放已经执行的旧 migration。第五份 migration 会检查前置群组结构，缺失时明确失败，避免部分功能看似成功但数据库边界没有建立；第六份必须在第五份成功后执行。执行后可验证：
+不要在远程项目执行 `supabase db reset`，也不要重复手工回放已经执行的旧 migration。执行后可验证：
 
 ```sql
 select
