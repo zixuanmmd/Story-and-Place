@@ -36,7 +36,6 @@ export function AppHeader() {
     try {
       await signOut();
       router.replace("/");
-      router.refresh();
     } catch (signOutError) {
       setError(getFriendlyError(signOutError, "退出登录失败，请重试。"));
     } finally {

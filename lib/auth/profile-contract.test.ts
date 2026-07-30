@@ -22,6 +22,18 @@ const tagEntriesView = readFileSync(
   join(process.cwd(), "components/tags/tag-entries-view.tsx"),
   "utf8",
 );
+const appHeader = readFileSync(
+  join(process.cwd(), "components/navigation/app-header.tsx"),
+  "utf8",
+);
+const mapExperience = readFileSync(
+  join(process.cwd(), "components/map/map-experience.tsx"),
+  "utf8",
+);
+const mapCanvas = readFileSync(
+  join(process.cwd(), "components/map/map-canvas.tsx"),
+  "utf8",
+);
 
 describe("registration and session contracts", () => {
   it("注册触发器以 auth user id 和显示名创建公开资料且不写入邮箱", () => {
@@ -65,6 +77,13 @@ describe("registration and session contracts", () => {
   it("认证数据边界在身份变化时重挂载客户端树并清空页面状态", () => {
     expect(appProviders).toContain("if (!dataReady)");
     expect(appProviders).toContain("<AuthScopedTree key={dataScope}>");
+  });
+
+  it("退出后不使用保留客户端状态的刷新，并按认证作用域重建地图", () => {
+    expect(appHeader).not.toContain("router.refresh()");
+    expect(mapExperience).toContain("scopeKey={scope}");
+    expect(mapExperience).toContain("key={scope}");
+    expect(mapCanvas).toContain("key={scopeKey}");
   });
 
   it("标签聚合按认证作用域重挂载并拒绝过期请求回写", () => {

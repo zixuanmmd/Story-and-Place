@@ -39,7 +39,7 @@ type TimelineViewProps =
   | { mode: "group"; groupSlug: string };
 
 export function TimelineView(props: TimelineViewProps) {
-  const { user } = useAuth();
+  const { dataScope } = useAuth();
   const scopeSuffix = props.mode === "user"
     ? props.targetUserId
     : props.mode === "group"
@@ -47,14 +47,14 @@ export function TimelineView(props: TimelineViewProps) {
       : "mine";
   return (
     <TimelineForScope
-      key={`${user?.id ?? "anon"}:${props.mode}:${scopeSuffix}`}
+      key={`${dataScope}:${props.mode}:${scopeSuffix}`}
       {...props}
     />
   );
 }
 
 function TimelineForScope(props: TimelineViewProps) {
-  const { user, loading: authLoading, configured } = useAuth();
+  const { user, loading: authLoading, dataScope, configured } = useAuth();
   const searchParams = useSearchParams();
   const router = useRouter();
   const [entries, setEntries] = useState<MapEntryWithProfile[]>([]);
@@ -288,6 +288,8 @@ function TimelineForScope(props: TimelineViewProps) {
             <div className="timeline-layout">
               <section className="timeline-map-panel" aria-label="时间线地图">
                 <TimelineMap
+                  key={dataScope}
+                  scopeKey={dataScope}
                   entries={visibleEntries}
                   selectedEntryId={selectedId}
                   draftCoordinates={null}

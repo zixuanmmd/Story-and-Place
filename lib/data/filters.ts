@@ -50,6 +50,7 @@ export function filterEntries(
   const keyword = filters.keyword.trim().toLocaleLowerCase("zh-CN");
 
   return entries.filter((entry) => {
+    if (!userId && entry.visibility !== "public") return false;
     if (filters.visibility === "public" && entry.visibility !== "public") return false;
     if (filters.visibility === "group" && entry.visibility !== "group") return false;
     if (filters.visibility === "mine" && entry.user_id !== userId) return false;

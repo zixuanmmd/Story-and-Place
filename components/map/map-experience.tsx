@@ -78,8 +78,14 @@ type MobilePanel = "filters" | "details" | "editor" | null;
 const DRAFT_STORAGE_KEY = "story-map-pending-entry";
 
 export function MapExperience() {
-  const { user, loading: authLoading, configured, authError } = useAuth();
-  const scope = getAuthDataScope(user?.id);
+  const {
+    user,
+    loading: authLoading,
+    dataScope,
+    configured,
+    authError,
+  } = useAuth();
+  const scope = getAuthDataScope(dataScope);
 
   return (
     <MapExperienceForScope
@@ -519,6 +525,8 @@ function MapExperienceForScope({
         <div className="map-stage">
           <MapErrorBoundary>
             <MapCanvas
+              key={scope}
+              scopeKey={scope}
               entries={filteredEntries}
               selectedEntryId={renderableSelectedEntry?.id ?? null}
               draftCoordinates={editor?.mode === "create" ? editor.coordinates : null}
