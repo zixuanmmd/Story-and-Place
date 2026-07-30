@@ -50,6 +50,12 @@ import {
   canRenderGroupEntry,
   filterEntriesForActiveGroups,
 } from "@/lib/data/group-scope";
+import {
+  getMyEntryParticipation,
+  getParticipantEditableFields,
+} from "@/lib/data/entry-collaboration";
+import type { EntryParticipantWithProfile } from "@/types/database";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 const MapCanvas = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -121,6 +127,8 @@ function MapExperienceForScope({
   const [groupOptions, setGroupOptions] = useState<Array<Pick<Group, "id" | "name">>>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
   const [groupsReady, setGroupsReady] = useState(false);
+  const [myParticipation, setMyParticipation] =
+    useState<EntryParticipantWithProfile | null>(null);
 
   const loadVisible = useCallback(() => listVisibleEntries(), []);
   const entryQuery = useScopedEntryQuery<MapEntryWithProfile>({
@@ -133,6 +141,28 @@ function MapExperienceForScope({
   const loadError = configured
     ? entryQuery.error
     : "Supabase 尚未配置。请填写环境变量后刷新页面。";
+
+  const refreshEntryData = useCallback(() => {
+    void reloadEntries();
+    if (selectedEntry) {
+      void getEntryById(selectedEntry.id).then((entry) => {
+        setSelectedEntry(entry);
+        if (!entry) {
+          setEditor(null);
+          setMobilePanel(null);
+        }
+      }).catch(() => {
+        setSelectedEntry(null);
+        setEditor(null);
+      });
+    }
+  }, [reloadEntries, selectedEntry]);
+  useEntryRealtime({
+    enabled: configured,
+    scopeKey: `map-${user?.id ?? "anon"}`,
+    includeCollaboration: Boolean(user),
+    onChange: refreshEntryData,
+  });
 
   useEffect(() => {
     if (!user || !configured) return;
@@ -212,12 +242,19 @@ function MapExperienceForScope({
         if (!localEntry) entryQuery.upsert(entry);
         setSelectedEntry(entry);
         setMobilePanel("details");
+        const participation = user && entry.user_id !== user.id
+          ? await getMyEntryParticipation(entry.id, user.id)
+          : null;
+        setMyParticipation(participation);
         if (searchParams.get("edit") === "1") {
-          if (entry.user_id === user?.id) {
+          if (
+            entry.user_id === user?.id
+            || (participation?.editable_fields.length ?? 0) > 0
+          ) {
             setEditor({ mode: "edit", entry });
             setMobilePanel("editor");
           } else {
-            setStatus("只有记录作者可以编辑这条记录。");
+            setStatus("你没有这条记录的字段编辑权限。");
           }
         }
       } catch (error) {
@@ -225,7 +262,7 @@ function MapExperienceForScope({
       }
     };
     void selectRequestedEntry();
-  }, [authLoading, configured, entries, entryQuery, loading, searchParams, user?.id]);
+  }, [authLoading, configured, entries, entryQuery, loading, searchParams, user]);
 
   useEffect(() => {
     if (!user || restoredDraftForUser.current === user.id) return;
@@ -260,15 +297,6 @@ function MapExperienceForScope({
     () => filterEntries(membershipSafeEntries, filters, user?.id ?? null, bounds),
     [bounds, filters, membershipSafeEntries, user?.id],
   );
-  const selectedForIdentity = getRenderableSelectedEntry(
-    selectedEntry,
-    user?.id ?? null,
-  );
-  const renderableSelectedEntry =
-    canRenderGroupEntry(selectedForIdentity, activeGroupIds)
-      ? selectedForIdentity
-      : null;
-
   const startCreate = useCallback((coordinates: Coordinates) => {
     setSelectedEntry(null);
     setEditor({ mode: "create", coordinates });
@@ -304,12 +332,41 @@ function MapExperienceForScope({
   const selectEntry = useCallback((entry: MapEntryWithProfile) => {
     setEditor(null);
     setSelectedEntry(entry);
+    setMyParticipation(null);
     setMobilePanel("details");
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("entry", entry.id);
     nextUrl.searchParams.delete("edit");
     window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
   }, []);
+
+  useEffect(() => {
+    if (!selectedEntry || !user || selectedEntry.user_id === user.id) {
+      return;
+    }
+    let active = true;
+    void getMyEntryParticipation(selectedEntry.id, user.id)
+      .then((participation) => {
+        if (active) setMyParticipation(participation);
+      })
+      .catch(() => {
+        if (active) setMyParticipation(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedEntry, user]);
+  const activeParticipation =
+    myParticipation?.entry_id === selectedEntry?.id ? myParticipation : null;
+  const selectedForIdentity = getRenderableSelectedEntry(
+    selectedEntry,
+    user?.id ?? null,
+    activeParticipation?.status === "accepted",
+  );
+  const renderableSelectedEntry =
+    canRenderGroupEntry(selectedForIdentity, activeGroupIds)
+      ? selectedForIdentity
+      : null;
 
   const handleViewChange = useCallback(
     (center: Coordinates, nextBounds: MapBoundsValue) => {
@@ -329,7 +386,7 @@ function MapExperienceForScope({
     );
   }, []);
 
-  const saveEntry = async (values: EntryFormValues) => {
+  const saveEntry = async (values: EntryFormValues, tagNames: string[]) => {
     if (!user) {
       window.sessionStorage.setItem(DRAFT_STORAGE_KEY, serializeEntryDraft(values));
       router.push(`/login?next=${encodeURIComponent("/?restoreDraft=1")}`);
@@ -338,8 +395,18 @@ function MapExperienceForScope({
 
     const outcome = await settleAction(async () =>
         editor?.mode === "edit"
-          ? await updateEntry(editor.entry.id, values)
-          : await createEntry(user.id, values),
+          ? await updateEntry(
+              editor.entry.id,
+              values,
+              editor.entry.user_id === user.id
+                || activeParticipation?.editable_fields.includes("tags")
+                ? tagNames
+                : null,
+              editor.entry.user_id === user.id
+                ? null
+                : activeParticipation?.editable_fields ?? [],
+            )
+          : await createEntry(values, tagNames),
     );
     if (!outcome.ok) {
       reportOperationalError(outcome.error, "save-entry");
@@ -402,12 +469,31 @@ function MapExperienceForScope({
     editor.mode === "create" ? (
       <EntryForm mode="create" coordinates={editor.coordinates} initialValues={editor.initialValues} initialGroupId={searchParams.get("group") ?? undefined} onSave={saveEntry} onCancel={closePanels} />
     ) : (
-      <EntryForm mode="edit" entry={editor.entry} onSave={saveEntry} onCancel={() => { setEditor(null); setMobilePanel("details"); }} />
+      <EntryForm
+        mode="edit"
+        entry={editor.entry}
+        isOwner={editor.entry.user_id === user?.id}
+        editableFields={getParticipantEditableFields(
+          editor.entry,
+          user?.id ?? null,
+          activeParticipation,
+        )}
+        onSave={saveEntry}
+        onCancel={() => { setEditor(null); setMobilePanel("details"); }}
+      />
     )
   ) : renderableSelectedEntry ? (
     <EntryDetail
       entry={renderableSelectedEntry}
       isOwner={renderableSelectedEntry.user_id === user?.id}
+      canEdit={
+        renderableSelectedEntry.user_id === user?.id
+        || (activeParticipation?.editable_fields.length ?? 0) > 0
+      }
+      canCollaborate={
+        renderableSelectedEntry.user_id === user?.id
+        || activeParticipation?.status === "accepted"
+      }
       busy={actionBusy}
       onClose={closePanels}
       onEdit={() => { setEditor({ mode: "edit", entry: renderableSelectedEntry }); setMobilePanel("editor"); }}

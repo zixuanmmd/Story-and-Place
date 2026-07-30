@@ -11,6 +11,7 @@ import { getFriendlyError } from "@/lib/errors";
 import { getRouteShareUrl, shareRoute } from "@/lib/routes/share";
 import { PlaceCategoryIcon, getCategoryLabel } from "@/lib/categories/registry";
 import type { GroupRole, StoryRouteItemWithEntry, StoryRouteWithRelations } from "@/types/database";
+import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 
 const RouteMap = dynamic(
   () => import("./story-route-map").then((module) => module.StoryRouteMap),
@@ -62,6 +63,12 @@ function StoryRouteDetailForScope({ shareSlug }: { shareSlug: string }) {
       setLoading(false);
     }
   }, [authLoading, configured, shareSlug, user]);
+  useEntryRealtime({
+    enabled: configured,
+    scopeKey: `route-${shareSlug}-${user?.id ?? "anon"}`,
+    includeCollaboration: Boolean(user),
+    onChange: load,
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);

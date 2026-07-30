@@ -18,6 +18,19 @@ export type InvitationStatus =
   | "declined"
   | "expired"
   | "cancelled";
+export type EntryParticipantStatus =
+  | "pending"
+  | "accepted"
+  | "declined"
+  | "revoked";
+export type EntryEditableField =
+  | "title"
+  | "content"
+  | "place"
+  | "location"
+  | "time"
+  | "category"
+  | "tags";
 export type PlaceCategorySlug =
   | "home"
   | "school"
@@ -153,6 +166,141 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "place_categories";
             referencedColumns: ["slug"];
+          },
+        ];
+      };
+      entry_participants: {
+        Row: {
+          entry_id: string;
+          user_id: string;
+          invited_by: string | null;
+          status: EntryParticipantStatus;
+          editable_fields: EntryEditableField[];
+          created_at: string;
+          updated_at: string;
+          responded_at: string | null;
+          revoked_at: string | null;
+        };
+        Insert: {
+          entry_id: string;
+          user_id: string;
+          invited_by?: string | null;
+          status?: EntryParticipantStatus;
+          editable_fields?: EntryEditableField[];
+          created_at?: string;
+          updated_at?: string;
+          responded_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Update: {
+          invited_by?: string | null;
+          status?: EntryParticipantStatus;
+          editable_fields?: EntryEditableField[];
+          responded_at?: string | null;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "entry_participants_entry_id_fkey";
+            columns: ["entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "entry_participants_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      entry_edit_logs: {
+        Row: {
+          id: string;
+          entry_id: string;
+          editor_id: string | null;
+          changed_fields: string[];
+          old_values: Json;
+          new_values: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          entry_id: string;
+          editor_id?: string | null;
+          changed_fields: string[];
+          old_values?: Json;
+          new_values?: Json;
+          created_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [
+          {
+            foreignKeyName: "entry_edit_logs_entry_id_fkey";
+            columns: ["entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "entry_edit_logs_editor_id_fkey";
+            columns: ["editor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      tags: {
+        Row: {
+          id: string;
+          name: string;
+          normalized_name: string;
+          slug: string;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          normalized_name: string;
+          slug?: string;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: { name?: string; normalized_name?: string };
+        Relationships: [];
+      };
+      entry_tags: {
+        Row: {
+          entry_id: string;
+          tag_id: string;
+          added_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          entry_id: string;
+          tag_id: string;
+          added_by?: string | null;
+          created_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [
+          {
+            foreignKeyName: "entry_tags_entry_id_fkey";
+            columns: ["entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "entry_tags_tag_id_fkey";
+            columns: ["tag_id"];
+            isOneToOne: false;
+            referencedRelation: "tags";
+            referencedColumns: ["id"];
           },
         ];
       };
@@ -564,6 +712,70 @@ export type Database = {
         };
         Returns: Json[];
       };
+      is_accepted_entry_participant: {
+        Args: { p_entry_id: string };
+        Returns: boolean;
+      };
+      can_collaborate_entry: {
+        Args: { p_entry_id: string };
+        Returns: boolean;
+      };
+      can_edit_entry_field: {
+        Args: { p_entry_id: string; p_field: string };
+        Returns: boolean;
+      };
+      invite_entry_participant: {
+        Args: {
+          p_entry_id: string;
+          p_invitee_id: string;
+          p_editable_fields: EntryEditableField[];
+        };
+        Returns: undefined;
+      };
+      respond_entry_participant_invitation: {
+        Args: { p_entry_id: string; p_accept: boolean };
+        Returns: undefined;
+      };
+      revoke_entry_participant: {
+        Args: { p_entry_id: string; p_user_id: string };
+        Returns: undefined;
+      };
+      update_entry_participant_permissions: {
+        Args: {
+          p_entry_id: string;
+          p_user_id: string;
+          p_editable_fields: EntryEditableField[];
+        };
+        Returns: undefined;
+      };
+      create_entry: {
+        Args: { p_entry: Json; p_tag_names?: string[] };
+        Returns: Json;
+      };
+      update_entry: {
+        Args: {
+          p_entry_id: string;
+          p_patch: Json;
+          p_tag_names?: string[] | null;
+        };
+        Returns: Json;
+      };
+      set_entry_tags: {
+        Args: { p_entry_id: string; p_tag_names: string[] };
+        Returns: undefined;
+      };
+      get_tag_entries: {
+        Args: {
+          p_tag_slug: string;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
+      get_visible_tag_summary: {
+        Args: { p_tag_slug: string };
+        Returns: Array<{ slug: string; name: string; entry_count: number }>;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
@@ -581,9 +793,23 @@ export type GroupInvitation = Database["public"]["Tables"]["group_invitations"][
 export type EntryComment = Database["public"]["Tables"]["entry_comments"]["Row"];
 export type StoryRoute = Database["public"]["Tables"]["story_routes"]["Row"];
 export type StoryRouteItem = Database["public"]["Tables"]["story_route_items"]["Row"];
+export type EntryParticipant = Database["public"]["Tables"]["entry_participants"]["Row"];
+export type EntryEditLog = Database["public"]["Tables"]["entry_edit_logs"]["Row"];
+export type Tag = Database["public"]["Tables"]["tags"]["Row"];
+export type EntryTag = Database["public"]["Tables"]["entry_tags"]["Row"];
+
+export type EntryParticipantWithProfile = EntryParticipant & {
+  profiles: Pick<Profile, "display_name" | "avatar_url"> | null;
+};
+
+export type EntryTagWithTag = EntryTag & {
+  tags: Pick<Tag, "id" | "name" | "slug"> | null;
+};
 
 export type MapEntryWithProfile = MapEntry & {
   profiles: Pick<Profile, "display_name" | "avatar_url"> | null;
+  entry_participants?: EntryParticipantWithProfile[];
+  entry_tags?: EntryTagWithTag[];
 };
 
 export type StoryRouteWithRelations = StoryRoute & {

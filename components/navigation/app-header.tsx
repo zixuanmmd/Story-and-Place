@@ -76,6 +76,7 @@ export function AppHeader() {
             <Link className="quiet-button nav-link" href="/feed">信息流</Link>
             <Link className="quiet-button nav-link" href="/timeline">时间线</Link>
             <Link className="quiet-button nav-link" href="/routes">路线</Link>
+            <Link className="quiet-button nav-link" href="/entry-invitations">共同邀请</Link>
             <Link className="quiet-button nav-link" href="/my-records">我的记录</Link>
             <Link className="quiet-button nav-link" href="/settings">{profile?.display_name ?? "个人设置"}</Link>
             <button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy}>

@@ -8,7 +8,10 @@ import {
   TIME_PRECISION_LABELS,
   type EntryFormValues,
 } from "@/lib/validation/entry";
-import type { MapEntry } from "@/types/database";
+import type {
+  EntryEditableField,
+  MapEntryWithProfile,
+} from "@/types/database";
 import type { Coordinates } from "@/types/map";
 import { entryToFormValues } from "@/lib/validation/entry";
 import { getBrowserTimeZone } from "@/lib/time/local-date-time";
@@ -16,20 +19,26 @@ import { PLACE_CATEGORIES, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { useAuth } from "@/components/providers/auth-provider";
 import { listVisibleGroups } from "@/lib/data/groups";
 import type { Group } from "@/types/database";
+import {
+  formatEntryTagInput,
+  tagInputSchema,
+} from "@/lib/validation/tags";
 
 type EntryFormProps = {
   mode: "create" | "edit";
   coordinates?: Coordinates;
   initialValues?: EntryFormValues;
-  entry?: MapEntry;
-  onSave: (values: EntryFormValues) => Promise<void>;
+  entry?: MapEntryWithProfile;
+  onSave: (values: EntryFormValues, tagNames: string[]) => Promise<void>;
   onCancel: () => void;
   initialGroupId?: string;
+  isOwner?: boolean;
+  editableFields?: EntryEditableField[];
 };
 
 function getDefaults(
   coordinates?: Coordinates,
-  entry?: MapEntry,
+  entry?: MapEntryWithProfile,
   initialValues?: EntryFormValues,
   initialGroupId?: string,
 ): EntryFormValues {
@@ -59,6 +68,8 @@ export function EntryForm({
   onSave,
   onCancel,
   initialGroupId,
+  isOwner = true,
+  editableFields,
 }: EntryFormProps) {
   const form = useForm<EntryFormValues>({
     resolver: zodResolver(entryFormSchema),
@@ -72,6 +83,21 @@ export function EntryForm({
   const { user } = useAuth();
   const [groupChoices, setGroupChoices] = useState<Group[]>([]);
   const [groupError, setGroupError] = useState<string | null>(null);
+  const [tagInput, setTagInput] = useState(() =>
+    entry ? formatEntryTagInput(entry) : "",
+  );
+  const [tagError, setTagError] = useState<string | null>(null);
+  const canEdit = (field: EntryEditableField) =>
+    mode === "create" || isOwner || editableFields?.includes(field);
+  const submit = async (values: EntryFormValues) => {
+    setTagError(null);
+    const result = tagInputSchema.safeParse(tagInput);
+    if (!result.success) {
+      setTagError(result.error.issues[0]?.message ?? "标签格式无效。");
+      return;
+    }
+    await onSave(values, result.data);
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -114,7 +140,7 @@ export function EntryForm({
   return (
     <form
       className="entry-form stack-form"
-      onSubmit={form.handleSubmit(onSave)}
+      onSubmit={form.handleSubmit(submit)}
       noValidate
     >
       <div className="form-title-row">
@@ -129,7 +155,7 @@ export function EntryForm({
 
       <label>
         <span>标题 *</span>
-        <input maxLength={100} placeholder="给这段记忆一个名字" {...form.register("title")} />
+        <input disabled={!canEdit("title")} maxLength={100} placeholder="给这段记忆一个名字" {...form.register("title")} />
         <span className="field-meta">
           {form.formState.errors.title?.message ?? `${titleValue.length}/100`}
         </span>
@@ -139,6 +165,7 @@ export function EntryForm({
         <span>事件内容 *</span>
         <textarea
           rows={7}
+          disabled={!canEdit("content")}
           maxLength={5000}
           placeholder="写下在这个地点、这个时间发生的事……"
           {...form.register("content")}
@@ -152,6 +179,7 @@ export function EntryForm({
         <label>
           <span>时间精度 *</span>
           <select
+            disabled={!canEdit("time")}
             {...form.register("time_precision", {
               onChange: (event) => {
                 form.setValue("time_value", "", { shouldValidate: false });
@@ -174,6 +202,7 @@ export function EntryForm({
           <input
             key={precision}
             type={timeInput.type}
+            disabled={!canEdit("time")}
             placeholder={timeInput.placeholder}
             min={precision === "year" ? 1 : undefined}
             max={precision === "year" ? 9999 : undefined}
@@ -190,6 +219,7 @@ export function EntryForm({
           <span>事件当地时区（可选）</span>
           <input
             placeholder="例如 Asia/Shanghai；不确定可留空"
+            disabled={!canEdit("time")}
             maxLength={100}
             {...form.register("occurred_timezone")}
           />
@@ -205,7 +235,7 @@ export function EntryForm({
 
       <label>
         <span>地点名称</span>
-        <input maxLength={200} placeholder="例如：外婆家的院子" {...form.register("place_name")} />
+        <input disabled={!canEdit("place")} maxLength={200} placeholder="例如：外婆家的院子" {...form.register("place_name")} />
         {form.formState.errors.place_name ? (
           <small>{form.formState.errors.place_name.message}</small>
         ) : null}
@@ -216,7 +246,7 @@ export function EntryForm({
         <div className="category-choice-grid">
           {PLACE_CATEGORIES.map((item) => (
             <label key={item.slug} className={category === item.slug ? "category-choice is-selected" : "category-choice"}>
-              <input type="radio" value={item.slug} {...form.register("place_category_slug")} />
+              <input disabled={!canEdit("category")} type="radio" value={item.slug} {...form.register("place_category_slug")} />
               <PlaceCategoryIcon category={item.slug} />
               <span>{item.label}</span>
             </label>
@@ -232,6 +262,7 @@ export function EntryForm({
           <span>纬度 *</span>
           <input
             type="number"
+            disabled={!canEdit("location")}
             step="any"
             {...form.register("latitude", { valueAsNumber: true })}
           />
@@ -243,6 +274,7 @@ export function EntryForm({
           <span>经度 *</span>
           <input
             type="number"
+            disabled={!canEdit("location")}
             step="any"
             {...form.register("longitude", { valueAsNumber: true })}
           />
@@ -255,15 +287,15 @@ export function EntryForm({
       <fieldset className="visibility-fieldset">
         <legend>可见性 *</legend>
         <label>
-          <input type="radio" value="public" {...form.register("visibility")} />
+          <input disabled={mode === "edit" && !isOwner} type="radio" value="public" {...form.register("visibility")} />
           <span><b aria-hidden="true">◉</b><strong>公开</strong><small>所有访客都可以在地图上看到</small></span>
         </label>
         <label>
-          <input type="radio" value="private" {...form.register("visibility")} />
+          <input disabled={mode === "edit" && !isOwner} type="radio" value="private" {...form.register("visibility")} />
           <span><b aria-hidden="true">▣</b><strong>私密</strong><small>只有你登录后可以看到</small></span>
         </label>
         <label>
-          <input type="radio" value="group" {...form.register("visibility")} />
+          <input disabled={mode === "edit" && !isOwner} type="radio" value="group" {...form.register("visibility")} />
           <span><b aria-hidden="true">◇</b><strong>群组</strong><small>只有所选群组的有效成员可见</small></span>
         </label>
       </fieldset>
@@ -271,7 +303,7 @@ export function EntryForm({
       {visibility === "group" ? (
         <label>
           <span>发布到群组 *</span>
-          <select {...form.register("group_id")}>
+          <select disabled={mode === "edit" && !isOwner} {...form.register("group_id")}>
             <option value="">请选择群组</option>
             {groupChoices.map((group) => (
               <option key={group.id} value={group.id}>{group.name}</option>
@@ -285,9 +317,26 @@ export function EntryForm({
         </label>
       ) : null}
 
+      <label>
+        <span>标签</span>
+        <input
+          disabled={!canEdit("tags")}
+          value={tagInput}
+          maxLength={500}
+          placeholder="用逗号分隔，最多 10 个"
+          onChange={(event) => {
+            setTagInput(event.target.value);
+            setTagError(null);
+          }}
+        />
+        <span className="field-meta">
+          {tagError ?? "例如：童年，老街，毕业旅行"}
+        </span>
+      </label>
+
       {visibility !== "private" ? (
         <label className="check-row">
-          <input type="checkbox" {...form.register("allow_comments")} />
+          <input disabled={mode === "edit" && !isOwner} type="checkbox" {...form.register("allow_comments")} />
           <span>允许登录用户评论</span>
         </label>
       ) : null}
@@ -296,7 +345,11 @@ export function EntryForm({
         <button className="secondary-button" type="button" onClick={onCancel}>
           取消
         </button>
-        <button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={form.formState.isSubmitting}
+        >
           {form.formState.isSubmitting ? "正在保存…" : mode === "create" ? "创建记录" : "保存修改"}
         </button>
       </div>

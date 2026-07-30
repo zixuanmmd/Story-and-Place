@@ -109,9 +109,14 @@ export function getRenderableEntries<T>(
 
 export function getRenderableSelectedEntry<
   T extends { user_id: string; visibility: "public" | "private" | "group" },
->(entry: T | null, currentUserId: string | null): T | null {
+>(
+  entry: T | null,
+  currentUserId: string | null,
+  isAcceptedParticipant = false,
+): T | null {
   if (!entry) return null;
   if (entry.visibility === "public") return entry;
-  if (entry.visibility === "group") return currentUserId ? entry : null;
-  return entry.user_id === currentUserId ? entry : null;
+  if (!currentUserId) return null;
+  if (entry.visibility === "group") return entry;
+  return entry.user_id === currentUserId || isAcceptedParticipant ? entry : null;
 }

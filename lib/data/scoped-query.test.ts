@@ -115,6 +115,11 @@ describe("scoped query privacy isolation", () => {
     expect(getRenderableSelectedEntry(privateA, "user-b")).toBeNull();
   });
 
+  it("accepted 私密参与者可以渲染已由数据库授权的选中记录", () => {
+    expect(getRenderableSelectedEntry(privateA, "user-b", true)).toBe(privateA);
+    expect(getRenderableSelectedEntry(privateA, null, true)).toBeNull();
+  });
+
   it("退出后已选中的群组详情立即关闭", () => {
     const groupEntry: TestEntry = {
       id: "group-a",
