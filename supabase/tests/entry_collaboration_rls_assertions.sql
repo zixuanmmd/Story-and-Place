@@ -84,6 +84,12 @@ select public.invite_entry_participant(
   array['content', 'tags']
 );
 
+select public.update_entry(
+  '85000000-0000-4000-8000-000000000005',
+  '{"content":"接受邀请前的所有者编辑"}'::jsonb,
+  null
+);
+
 reset role;
 set local role authenticated;
 select set_config(
@@ -117,12 +123,13 @@ select public.update_entry(
   array['共同经历', '只对可见用户聚合']
 );
 select pg_temp.assert_true(
-  exists (
-    select 1 from public.entry_edit_logs
+  (
+    select count(*) = 2
+    from public.entry_edit_logs
     where entry_id = '85000000-0000-4000-8000-000000000005'
       and editor_id = '82000000-0000-4000-8000-000000000002'
   ),
-  'participant update must create an edit log'
+  'accepted participant must read only compliant post-acceptance edit logs'
 );
 
 do $$
@@ -171,14 +178,89 @@ reset role;
 set local role authenticated;
 select set_config(
   'request.jwt.claims',
+  '{"sub":"81000000-0000-4000-8000-000000000001","role":"authenticated"}',
+  true
+);
+select pg_temp.assert_true(
+  (
+    select count(*) = 3
+    from public.entry_edit_logs
+    where entry_id = '85000000-0000-4000-8000-000000000005'
+  ),
+  'entry owner must read both owner and accepted-participant edit logs'
+);
+
+select public.create_entry(
+  jsonb_build_object(
+    'title', '公开标签权限测试',
+    'content', '匿名与登录用户都只能通过可读事件看到标签',
+    'latitude', 34,
+    'longitude', 124,
+    'occurred_year', 2026,
+    'time_precision', 'year',
+    'time_label', '2026 年',
+    'visibility', 'public',
+    'group_id', null,
+    'place_category_slug', 'other',
+    'allow_comments', true
+  ),
+  array['公开标签']
+);
+
+reset role;
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
   '{"sub":"83000000-0000-4000-8000-000000000003","role":"authenticated"}',
   true
 );
 select pg_temp.assert_true(
-  not exists (select 1 from public.tags),
-  'unrelated user must not see tags used only by a private entry'
+  not exists (
+    select 1 from public.entry_edit_logs
+    where entry_id = '85000000-0000-4000-8000-000000000005'
+  ),
+  'unrelated user must not read private-entry edit logs'
+);
+select pg_temp.assert_true(
+  exists (
+    select 1 from public.tags
+    where normalized_name = '公开标签'
+  ),
+  'authenticated user must query tags backed by readable public entries'
+);
+select pg_temp.assert_true(
+  not exists (
+    select 1 from public.tags
+    where normalized_name in ('共同经历', '只对可见用户聚合')
+  ),
+  'authenticated user must not see tags backed only by private entries'
 );
 
+reset role;
+set local role anon;
+select set_config('request.jwt.claims', '{}', true);
+select pg_temp.assert_true(
+  exists (
+    select 1 from public.tags
+    where normalized_name = '公开标签'
+  ),
+  'anonymous user must query tags backed by readable public entries'
+);
+select pg_temp.assert_true(
+  not exists (
+    select 1 from public.tags
+    where normalized_name in ('共同经历', '只对可见用户聚合')
+  ),
+  'anonymous user must not see tags backed only by private entries'
+);
+
+reset role;
+set local role authenticated;
+select set_config(
+  'request.jwt.claims',
+  '{"sub":"83000000-0000-4000-8000-000000000003","role":"authenticated"}',
+  true
+);
 do $$
 begin
   begin
