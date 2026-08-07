@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 import {
@@ -14,6 +15,8 @@ import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
 import { useScopedEntryQuery } from "@/hooks/use-scoped-entry-query";
 import { EntryForm } from "@/components/forms/entry-form";
+import { OnboardingEntryForm } from "@/components/onboarding/onboarding-entry-form";
+import { GuidedEmptyState } from "@/components/ui/guided-empty-state";
 import { EntryDetail } from "@/components/entries/entry-detail";
 import { FilterPanel } from "@/components/entries/filter-panel";
 import { ConfirmDialog } from "@/components/entries/confirm-dialog";
@@ -56,6 +59,9 @@ import {
 } from "@/lib/data/entry-collaboration";
 import type { EntryParticipantWithProfile } from "@/types/database";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { ensureOnboardingDecision } from "@/lib/data/onboarding";
+import { parseStoryTemplateId } from "@/lib/templates/story-templates";
+import { listFeaturedPublicEntries } from "@/lib/data/explore";
 
 const MapCanvas = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -135,6 +141,32 @@ function MapExperienceForScope({
   const [groupsReady, setGroupsReady] = useState(false);
   const [myParticipation, setMyParticipation] =
     useState<EntryParticipantWithProfile | null>(null);
+  const [featuredHomeEntry, setFeaturedHomeEntry] =
+    useState<MapEntryWithProfile | null>(null);
+  const isOnboardingFlow = searchParams.get("onboarding") === "1";
+  const initialTemplateId = isOnboardingFlow
+    ? parseStoryTemplateId(searchParams.get("template"))
+    : null;
+  const hasIntentQuery = searchParams.size > 0;
+  const [onboardingCheckedUserId, setOnboardingCheckedUserId] = useState<string | null>(null);
+  const onboardingGateReady = !user || hasIntentQuery || onboardingCheckedUserId === user.id;
+
+  useEffect(() => {
+    if (!user || authLoading || !configured || hasIntentQuery) return;
+    let active = true;
+    void ensureOnboardingDecision(user.id)
+      .then((decision) => {
+        if (!active) return;
+        if (decision.shouldOnboard) router.replace("/onboarding");
+        else setOnboardingCheckedUserId(user.id);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setStatus(getFriendlyError(error, "首次使用引导暂时不可用，已继续打开地图。"));
+        setOnboardingCheckedUserId(user.id);
+      });
+    return () => { active = false; };
+  }, [authLoading, configured, hasIntentQuery, router, user]);
 
   const loadVisible = useCallback(() => listVisibleEntries(), []);
   const entryQuery = useScopedEntryQuery<MapEntryWithProfile>({
@@ -147,6 +179,23 @@ function MapExperienceForScope({
   const loadError = configured
     ? entryQuery.error
     : "Supabase 尚未配置。请填写环境变量后刷新页面。";
+
+  useEffect(() => {
+    if (!configured || authLoading) return;
+    let active = true;
+    void listFeaturedPublicEntries(1)
+      .then((featuredEntries) => {
+        if (active) setFeaturedHomeEntry(featuredEntries[0] ?? null);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setFeaturedHomeEntry(null);
+        reportOperationalError(error, "load-home-featured-entry");
+      });
+    return () => {
+      active = false;
+    };
+  }, [authLoading, configured]);
 
   const refreshEntryData = useCallback(() => {
     void reloadEntries();
@@ -395,7 +444,14 @@ function MapExperienceForScope({
   const saveEntry = async (values: EntryFormValues, tagNames: string[]) => {
     if (!user) {
       window.sessionStorage.setItem(DRAFT_STORAGE_KEY, serializeEntryDraft(values));
-      router.push(`/login?next=${encodeURIComponent("/?restoreDraft=1")}`);
+      if (isOnboardingFlow) window.sessionStorage.setItem("story-map-onboarding-draft", "1");
+      const restoreParams = new URLSearchParams({ restoreDraft: "1" });
+      if (isOnboardingFlow) {
+        restoreParams.set("onboarding", "1");
+        if (initialTemplateId) restoreParams.set("template", initialTemplateId);
+      }
+      const restorePath = `/?${restoreParams.toString()}`;
+      router.push(`/login?next=${encodeURIComponent(restorePath)}`);
       return;
     }
 
@@ -422,7 +478,12 @@ function MapExperienceForScope({
 
     const saved = outcome.value;
     window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+    window.sessionStorage.removeItem("story-map-onboarding-draft");
     entryQuery.upsert(saved);
+    if (editor?.mode === "create" && isOnboardingFlow) {
+      router.push(`/onboarding/complete?entry=${encodeURIComponent(saved.id)}`);
+      return;
+    }
     setSelectedEntry(saved);
     setEditor(null);
     setMobilePanel("details");
@@ -438,9 +499,9 @@ function MapExperienceForScope({
       );
       entryQuery.upsert(updated);
       setSelectedEntry(updated);
-      setStatus(updated.visibility === "private" ? "记录已设为私密。" : "记录已设为公开。 ");
+      setStatus(updated.visibility === "private" ? "这条故事现在只对你和已接受邀请的共同经历者开放。" : "这条故事现在所有人都可以看到。");
     } catch (error) {
-      setStatus(getFriendlyError(error, "可见性更新失败。"));
+      setStatus(getFriendlyError(error, "阅读范围更新失败。"));
     } finally {
       setActionBusy(false);
     }
@@ -473,7 +534,25 @@ function MapExperienceForScope({
 
   const panelContent = editor ? (
     editor.mode === "create" ? (
-      <EntryForm mode="create" coordinates={editor.coordinates} initialValues={editor.initialValues} initialGroupId={searchParams.get("group") ?? undefined} onSave={saveEntry} onCancel={closePanels} />
+      isOnboardingFlow ? (
+        <OnboardingEntryForm
+          coordinates={editor.coordinates}
+          initialValues={editor.initialValues}
+          initialTemplateId={initialTemplateId}
+          onSave={saveEntry}
+          onCancel={closePanels}
+        />
+      ) : (
+        <EntryForm
+          mode="create"
+          coordinates={editor.coordinates}
+          initialValues={editor.initialValues}
+          initialGroupId={searchParams.get("group") ?? undefined}
+          initialTemplateId={initialTemplateId}
+          onSave={saveEntry}
+          onCancel={closePanels}
+        />
+      )
     ) : (
       <EntryForm
         mode="edit"
@@ -507,12 +586,14 @@ function MapExperienceForScope({
       onToggleVisibility={() => void toggleVisibility(renderableSelectedEntry)}
     />
   ) : (
-    <div className="panel-empty">
-      <span className="compass" aria-hidden="true">✦</span>
-      <h2>选择一处地点</h2>
-      <p>点击地图空白处新建记录，或选择一个标记阅读故事。</p>
-    </div>
+    user && !entries.some((entry) => entry.user_id === user.id) ? (
+      <GuidedEmptyState eyebrow="YOUR FIRST PLACE" title="你的故事地图还是空白。" description="从一个地方开始。点击地图，留下时间和你仍然记得的事情。"><button className="primary-button" type="button" onClick={() => startCreate(viewCenter)}>选择地图中心</button></GuidedEmptyState>
+    ) : <GuidedEmptyState compact title="选择一处地点" description="点击地图空白处新建记录，或选择一个标记阅读故事。" />
   );
+
+  if (!onboardingGateReady) {
+    return <main className="content-page"><AppHeader /><div className="page-loading" role="status">正在准备你的故事地图…</div></main>;
+  }
 
   return (
     <main className="h-dvh overflow-hidden bg-[#f4f1e9] text-[#26251f]">
@@ -548,10 +629,20 @@ function MapExperienceForScope({
           ) : null}
           {authError ? <div className="map-error" role="alert">{authError}</div> : null}
           {status ? <div className="toast-message" role="status">{status}</div> : null}
+          {isOnboardingFlow && !editor ? <div className="onboarding-map-prompt" role="status"><strong>第 2 步：选择第一个地点</strong><span>点击地图上对你有意义的位置，开始写第一个故事。</span></div> : null}
+          {featuredHomeEntry && !isOnboardingFlow ? (
+            <aside className="map-featured-callout" aria-label="编辑精选">
+              <span className="eyebrow">✦ 编辑精选</span>
+              <Link href={`/?entry=${featuredHomeEntry.id}`}>
+                <strong>{featuredHomeEntry.title}</strong>
+                <small>{featuredHomeEntry.place_name ?? featuredHomeEntry.time_label}</small>
+              </Link>
+            </aside>
+          ) : null}
 
           <button className="mobile-filter-button" type="button" onClick={() => setMobilePanel("filters")}>☷ 筛选</button>
           <button className="floating-create" type="button" onClick={() => startCreate(viewCenter)}>
-            <span aria-hidden="true">＋</span>新建记录
+            <span aria-hidden="true">＋</span>{isOnboardingFlow ? "从地图中心开始" : "新建记录"}
           </button>
         </div>
 

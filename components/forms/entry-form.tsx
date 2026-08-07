@@ -23,6 +23,18 @@ import {
   formatEntryTagInput,
   tagInputSchema,
 } from "@/lib/validation/tags";
+import {
+  formatUnlockAtForInput,
+  unlockInputToIso,
+} from "@/lib/time/time-capsule";
+import { StoryTemplatePicker } from "@/components/forms/story-template-picker";
+import {
+  addTemplateTag,
+  applyStoryTemplateDefaults,
+  getStoryTemplate,
+  type StoryTemplateId,
+} from "@/lib/templates/story-templates";
+import { ENTRY_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 
 type EntryFormProps = {
   mode: "create" | "edit";
@@ -32,6 +44,7 @@ type EntryFormProps = {
   onSave: (values: EntryFormValues, tagNames: string[]) => Promise<void>;
   onCancel: () => void;
   initialGroupId?: string;
+  initialTemplateId?: StoryTemplateId | null;
   isOwner?: boolean;
   editableFields?: EntryEditableField[];
 };
@@ -41,10 +54,10 @@ function getDefaults(
   entry?: MapEntryWithProfile,
   initialValues?: EntryFormValues,
   initialGroupId?: string,
+  initialTemplateId?: StoryTemplateId | null,
 ): EntryFormValues {
   if (entry) return entryToFormValues(entry);
-  if (initialValues) return initialValues;
-  return {
+  const defaults = initialValues ?? {
     title: "",
     content: "",
     place_name: "",
@@ -57,7 +70,9 @@ function getDefaults(
     group_id: initialGroupId ?? "",
     place_category_slug: "other",
     allow_comments: true,
+    unlock_at: "",
   };
+  return applyStoryTemplateDefaults(defaults, initialTemplateId ?? null);
 }
 
 export function EntryForm({
@@ -68,12 +83,19 @@ export function EntryForm({
   onSave,
   onCancel,
   initialGroupId,
+  initialTemplateId = null,
   isOwner = true,
   editableFields,
 }: EntryFormProps) {
   const form = useForm<EntryFormValues>({
     resolver: zodResolver(entryFormSchema),
-    defaultValues: getDefaults(coordinates, entry, initialValues, initialGroupId),
+    defaultValues: getDefaults(
+      coordinates,
+      entry,
+      initialValues,
+      initialGroupId,
+      mode === "create" ? initialTemplateId : null,
+    ),
   });
   const precision = useWatch({ control: form.control, name: "time_precision" });
   const titleValue = useWatch({ control: form.control, name: "title" });
@@ -84,13 +106,53 @@ export function EntryForm({
   const [groupChoices, setGroupChoices] = useState<Group[]>([]);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState(() =>
-    entry ? formatEntryTagInput(entry) : "",
+    entry
+      ? formatEntryTagInput(entry)
+      : addTemplateTag("", mode === "create" ? initialTemplateId : null),
+  );
+  const [selectedTemplateId, setSelectedTemplateId] =
+    useState<StoryTemplateId | null>(mode === "create" ? initialTemplateId : null);
+  const [minimumUnlockAt] = useState(() =>
+    formatUnlockAtForInput(new Date().toISOString()),
   );
   const [tagError, setTagError] = useState<string | null>(null);
   const canEdit = (field: EntryEditableField) =>
     mode === "create" || isOwner || editableFields?.includes(field);
+  const selectTemplate = (templateId: StoryTemplateId | null) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    const current = form.getValues();
+    const next = applyStoryTemplateDefaults(current, templateId);
+    if (next.place_category_slug !== current.place_category_slug) {
+      form.setValue("place_category_slug", next.place_category_slug, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+    if (next.time_precision !== current.time_precision) {
+      form.setValue("time_precision", next.time_precision, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+    setTagInput((currentTags) => addTemplateTag(currentTags, templateId));
+  };
   const submit = async (values: EntryFormValues) => {
     setTagError(null);
+    const nextUnlockAt = values.unlock_at
+      ? unlockInputToIso(values.unlock_at)
+      : null;
+    if (
+      nextUnlockAt &&
+      nextUnlockAt !== entry?.unlock_at &&
+      new Date(nextUnlockAt).getTime() <= new Date(minimumUnlockAt).getTime()
+    ) {
+      form.setError("unlock_at", {
+        type: "validate",
+        message: "新的解锁时间必须晚于现在。",
+      });
+      return;
+    }
     const result = tagInputSchema.safeParse(tagInput);
     if (!result.success) {
       setTagError(result.error.issues[0]?.message ?? "标签格式无效。");
@@ -153,6 +215,10 @@ export function EntryForm({
         </button>
       </div>
 
+      {mode === "create" ? (
+        <StoryTemplatePicker value={selectedTemplateId} onChange={selectTemplate} />
+      ) : null}
+
       <label>
         <span>标题 *</span>
         <input disabled={!canEdit("title")} maxLength={100} placeholder="给这段记忆一个名字" {...form.register("title")} />
@@ -167,7 +233,10 @@ export function EntryForm({
           rows={7}
           disabled={!canEdit("content")}
           maxLength={5000}
-          placeholder="写下在这个地点、这个时间发生的事……"
+          placeholder={
+            getStoryTemplate(selectedTemplateId)?.contentPlaceholder
+            ?? "写下在这个地点、这个时间发生的事……"
+          }
           {...form.register("content")}
         />
         <span className="field-meta">
@@ -233,6 +302,24 @@ export function EntryForm({
         </label>
       ) : null}
 
+      {mode === "create" || isOwner ? (
+        <label>
+          <span>时间胶囊解锁时间（可选）</span>
+          <input
+            type="datetime-local"
+            min={minimumUnlockAt}
+            {...form.register("unlock_at")}
+          />
+          {form.formState.errors.unlock_at ? (
+            <small>{form.formState.errors.unlock_at.message}</small>
+          ) : (
+            <span className="field-meta">
+              设置后，解锁前只有你能看到；到达该时刻后自动恢复你选择的阅读范围。
+            </span>
+          )}
+        </label>
+      ) : null}
+
       <label>
         <span>地点名称</span>
         <input disabled={!canEdit("place")} maxLength={200} placeholder="例如：外婆家的院子" {...form.register("place_name")} />
@@ -285,18 +372,18 @@ export function EntryForm({
       </div>
 
       <fieldset className="visibility-fieldset">
-        <legend>可见性 *</legend>
-        <label>
-          <input disabled={mode === "edit" && !isOwner} type="radio" value="public" {...form.register("visibility")} />
-          <span><b aria-hidden="true">◉</b><strong>公开</strong><small>所有访客都可以在地图上看到</small></span>
-        </label>
+        <legend>谁可以看到？ *</legend>
         <label>
           <input disabled={mode === "edit" && !isOwner} type="radio" value="private" {...form.register("visibility")} />
-          <span><b aria-hidden="true">▣</b><strong>私密</strong><small>只有你登录后可以看到</small></span>
+          <span><b aria-hidden="true">{ENTRY_AUDIENCE_PRESENTATION.private.glyph}</b><strong>{ENTRY_AUDIENCE_PRESENTATION.private.label}</strong><small>{ENTRY_AUDIENCE_PRESENTATION.private.description}</small></span>
         </label>
         <label>
           <input disabled={mode === "edit" && !isOwner} type="radio" value="group" {...form.register("visibility")} />
-          <span><b aria-hidden="true">◇</b><strong>群组</strong><small>只有所选群组的有效成员可见</small></span>
+          <span><b aria-hidden="true">{ENTRY_AUDIENCE_PRESENTATION.group.glyph}</b><strong>{ENTRY_AUDIENCE_PRESENTATION.group.label}</strong><small>{ENTRY_AUDIENCE_PRESENTATION.group.description}</small></span>
+        </label>
+        <label>
+          <input disabled={mode === "edit" && !isOwner} type="radio" value="public" {...form.register("visibility")} />
+          <span><b aria-hidden="true">{ENTRY_AUDIENCE_PRESENTATION.public.glyph}</b><strong>{ENTRY_AUDIENCE_PRESENTATION.public.label}</strong><small>{ENTRY_AUDIENCE_PRESENTATION.public.description}</small></span>
         </label>
       </fieldset>
 

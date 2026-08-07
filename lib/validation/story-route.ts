@@ -21,7 +21,7 @@ export const storyRouteSchema = z.object({
   items: z.array(storyRouteItemSchema).min(1, "请至少选择一个故事节点。").max(200, "一条路线最多包含 200 个节点。"),
 }).superRefine((value, context) => {
   if ((value.visibility === "group") !== Boolean(value.group_id)) {
-    context.addIssue({ code: "custom", path: ["group_id"], message: "群组路线必须选择一个群组。" });
+    context.addIssue({ code: "custom", path: ["group_id"], message: "选择“所属群组成员”时，必须指定一个群组。" });
   }
   if (value.publish && value.items.length < 2) {
     context.addIssue({ code: "custom", path: ["items"], message: "发布路线至少需要两个节点。" });

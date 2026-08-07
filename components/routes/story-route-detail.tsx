@@ -12,6 +12,7 @@ import { getRouteShareUrl, shareRoute } from "@/lib/routes/share";
 import { PlaceCategoryIcon, getCategoryLabel } from "@/lib/categories/registry";
 import type { GroupRole, StoryRouteItemWithEntry, StoryRouteWithRelations } from "@/types/database";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { ROUTE_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 
 const RouteMap = dynamic(
   () => import("./story-route-map").then((module) => module.StoryRouteMap),
@@ -147,7 +148,7 @@ function StoryRouteDetailForScope({ shareSlug }: { shareSlug: string }) {
           <>
             <section className="route-hero">
               <div>
-                <p className="eyebrow">{route.visibility === "public" ? "PUBLIC STORY ROUTE" : route.visibility === "group" ? "GROUP STORY ROUTE" : "PRIVATE STORY ROUTE"}</p>
+                <p className="eyebrow">{ROUTE_AUDIENCE_PRESENTATION[route.visibility].shortLabel}</p>
                 <h1>{route.title}</h1>
                 <p>{route.description || "作者没有为这条路线写说明。"}</p>
                 <small>由 <Link href={`/users/${route.created_by}`}>{route.profiles?.display_name ?? "未知作者"}</Link> 整理 · {route.node_count} 个节点{route.groups ? ` · ${route.groups.name}` : ""}</small>
@@ -160,7 +161,7 @@ function StoryRouteDetailForScope({ shareSlug }: { shareSlug: string }) {
               </div>
             </section>
             {route.archived_at ? <div className="inline-notice">这条路线已归档，只读保留。</div> : null}
-            {route.privacy_downgraded_at ? <div className="inline-notice">路线中的公开记录权限发生变化，数据库已自动把这条路线改为私密，避免原地点继续被公开分享。</div> : null}
+            {route.privacy_downgraded_at ? <div className="inline-notice">路线中的地点故事不再对所有人开放，因此这条路线已自动收回为只有你可见，避免继续分享原地点。</div> : null}
             {hiddenNodeCount ? <div className="inline-notice">有 {hiddenNodeCount} 个节点因记录删除或权限变化而暂时不可用，页面不会泄露其内容或位置。</div> : null}
             {status ? <div className="inline-error" role="status">{status}</div> : null}
             <div className="route-detail-layout">

@@ -10,8 +10,9 @@ import {
   respondEntryParticipantInvitation,
   type EntryInvitation,
 } from "@/lib/data/entry-collaboration";
-import { getFriendlyError } from "@/lib/errors";
+import { getFriendlyError, reportOperationalError } from "@/lib/errors";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { getEntryById } from "@/lib/data/entries";
 
 export function EntryInvitationsView() {
   const { user } = useAuth();
@@ -50,8 +51,26 @@ function EntryInvitationsForUser() {
       setInvitations((current) =>
         current.filter((invitation) => invitation.entry_id !== entryId)
       );
-      setAcceptedEntryId(accept ? entryId : null);
-      setStatus(accept ? "已接受共同经历邀请。" : "已拒绝邀请。");
+      let acceptedEntryAvailable = false;
+      let accessCheckFailed = false;
+      if (accept) {
+        try {
+          acceptedEntryAvailable = Boolean(await getEntryById(entryId));
+        } catch (accessError) {
+          accessCheckFailed = true;
+          reportOperationalError(accessError, "check-accepted-entry-access");
+        }
+      }
+      setAcceptedEntryId(acceptedEntryAvailable ? entryId : null);
+      setStatus(
+        accept
+          ? accessCheckFailed
+            ? "邀请已接受，但暂时无法确认故事是否已经解锁。请稍后刷新。"
+            : acceptedEntryAvailable
+            ? "已接受共同经历邀请。"
+            : "已接受邀请；如果这是尚未解锁的时间胶囊，需要等待解锁后才能打开。"
+          : "已拒绝邀请。",
+      );
     } catch (error) {
       setStatus(getFriendlyError(
         error,
@@ -120,7 +139,7 @@ function EntryInvitationsForUser() {
           <div>
             <p className="eyebrow">SHARED EXPERIENCES</p>
             <h1>共同经历邀请</h1>
-            <p>只有接受后，私密事件才会对你开放。</p>
+            <p>普通私密事件在接受后开放；未解锁的时间胶囊仍需等待。</p>
           </div>
         </div>
         {status ? <div className="inline-success" role="status">{status}</div> : null}

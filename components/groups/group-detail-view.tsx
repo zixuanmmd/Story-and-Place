@@ -21,6 +21,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { GroupStoryRoutes } from "@/components/routes/group-story-routes";
 import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { GROUP_DISCOVERY_PRESENTATION } from "@/lib/privacy/presentation";
 
 const GroupMap = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -178,7 +179,7 @@ function GroupDetailForScope({ slug }: { slug: string }) {
             <section className="group-hero">
               <div className="group-avatar group-avatar--large" aria-hidden="true">{group.name.slice(0, 1)}</div>
               <div>
-                <p className="eyebrow">{group.visibility === "public" ? "公开群组" : "私密群组"}{group.archived_at ? " · 已归档" : ""}</p>
+                <p className="eyebrow">{GROUP_DISCOVERY_PRESENTATION[group.visibility].shortLabel}{group.archived_at ? " · 已归档" : ""}</p>
                 <h1>{group.name}</h1>
                 <p>{group.description || "这个群组还没有写下简介。"}</p>
                 <span>{memberCount} 位成员{role ? ` · 你是${role === "owner" ? "群主" : role === "admin" ? "管理员" : "成员"}` : ""}</span>
@@ -226,7 +227,7 @@ function GroupDetailForScope({ slug }: { slug: string }) {
                 <GroupStoryRoutes groupId={group.id} groupSlug={group.slug} />
               </>
             ) : (
-              <div className="content-state"><h2>{group.visibility === "private" ? "这是一个私密群组" : "加入后阅读群组故事"}</h2><p>{group.visibility === "private" ? "只有收到邀请并接受后，才能查看成员和群组记录。" : "群组记录只对有效成员开放。"}</p></div>
+              <div className="content-state"><h2>{group.visibility === "private" ? "这个群组只接受邀请加入" : "加入后阅读群组故事"}</h2><p>{group.visibility === "private" ? "接受邀请后，才能查看成员和群组故事。" : "群组故事只对有效成员开放，群组简介可由所有人查看。"}</p></div>
             )}
           </>
         )}

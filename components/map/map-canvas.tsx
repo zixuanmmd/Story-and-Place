@@ -19,6 +19,7 @@ import {
   getCategoryLabel,
   getVisibilityMarkerGlyph,
 } from "@/lib/categories/registry";
+import { ENTRY_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 
 export const DEFAULT_CENTER: [number, number] = [25, 15];
 export const DEFAULT_ZOOM = 2;
@@ -37,9 +38,13 @@ function createEntryIcon(entry: MapEntryWithProfile, isSelected: boolean) {
     <Icon aria-hidden="true" size={18} strokeWidth={2.2} />,
   );
   const stateGlyph = getVisibilityMarkerGlyph(entry.visibility);
+  const capsuleBadge = entry.unlock_at
+    ? '<span class="story-marker__capsule" aria-hidden="true">T</span>'
+    : "";
+  const capsuleLabel = entry.unlock_at ? "，时间胶囊" : "";
   return L.divIcon({
     className: "story-marker-shell",
-    html: `<span class="story-marker story-marker--${entry.visibility}${stateClass}" aria-label="${getCategoryLabel(entry.place_category_slug)}，${entry.visibility === "public" ? "公开" : entry.visibility === "private" ? "私密" : "群组"}"><span class="story-marker__category">${categorySvg}</span><span class="story-marker__state" aria-hidden="true">${stateGlyph}</span></span>`,
+    html: `<span class="story-marker story-marker--${entry.visibility}${stateClass}" aria-label="${getCategoryLabel(entry.place_category_slug)}，${ENTRY_AUDIENCE_PRESENTATION[entry.visibility].shortLabel}${capsuleLabel}"><span class="story-marker__category">${categorySvg}</span><span class="story-marker__state" aria-hidden="true">${stateGlyph}</span>${capsuleBadge}</span>`,
     iconSize: [36, 44],
     iconAnchor: [18, 40],
   });
@@ -195,7 +200,7 @@ export function MapCanvas({
           }}
         >
           <Tooltip direction="top" offset={[0, -30]} opacity={0.96}>
-            <strong>{entry.title}</strong><br />{getCategoryLabel(entry.place_category_slug)} · {entry.time_label}
+            <strong>{entry.title}</strong><br />{getCategoryLabel(entry.place_category_slug)} · {entry.time_label}{entry.unlock_at ? " · 时间胶囊" : ""}
           </Tooltip>
         </Marker>
       ))}

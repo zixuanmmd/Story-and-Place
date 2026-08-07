@@ -21,6 +21,8 @@ const exactEntry: MapEntry = {
   group_id: "",
   place_category_slug: "other",
   allow_comments: true,
+  unlock_at: null,
+  featured_at: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };

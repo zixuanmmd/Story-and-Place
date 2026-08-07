@@ -22,6 +22,8 @@ function record(id: string, local: string, visibility: "public" | "private") {
     group_id: null,
     place_category_slug: "other",
     allow_comments: true,
+    unlock_at: null,
+    featured_at: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: id === "new" ? "2026-02-01T00:00:00Z" : "2026-01-01T00:00:00Z",
     profiles: null,

@@ -69,10 +69,10 @@ function GroupInvitationsForScope() {
     <main className="content-page">
       <AppHeader />
       <div className="content-container">
-        <div className="page-heading"><div><p className="eyebrow">INVITATIONS</p><h1>群组邀请</h1><p>接受后才会获得私密群组内容的访问权。</p></div><Link href="/groups">返回群组</Link></div>
+        <div className="page-heading"><div><p className="eyebrow">INVITATIONS</p><h1>群组邀请</h1><p>接受后才能阅读仅限邀请加入的群组内容。</p></div><Link href="/groups">返回群组</Link></div>
         {status ? <div className="inline-error" role="status">{status}</div> : null}
         {!user && !authLoading ? <div className="content-state"><p>登录后查看群组邀请。</p><Link href="/login?next=%2Fgroups%2Finvitations">登录</Link></div> : invitations.length ? (
-          <div className="records-list">{invitations.map((invitation) => <article className="record-card" key={invitation.id}><div><p className="eyebrow">{invitation.groups?.visibility === "private" ? "私密群组邀请" : "群组邀请"}</p><h2>{invitation.groups?.name ?? "群组"}</h2><p>有效期至 {new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(invitation.expires_at))}</p></div><div className="record-actions"><button className="primary-button" disabled={busyId === invitation.id} type="button" onClick={() => void respond(invitation.id, true)}>接受</button><button className="secondary-button" disabled={busyId === invitation.id} type="button" onClick={() => void respond(invitation.id, false)}>拒绝</button></div></article>)}</div>
+          <div className="records-list">{invitations.map((invitation) => <article className="record-card" key={invitation.id}><div><p className="eyebrow">{invitation.groups?.visibility === "private" ? "仅限邀请加入" : "可以直接加入"}</p><h2>{invitation.groups?.name ?? "群组"}</h2><p>有效期至 {new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(invitation.expires_at))}</p></div><div className="record-actions"><button className="primary-button" disabled={busyId === invitation.id} type="button" onClick={() => void respond(invitation.id, true)}>接受</button><button className="secondary-button" disabled={busyId === invitation.id} type="button" onClick={() => void respond(invitation.id, false)}>拒绝</button></div></article>)}</div>
         ) : <div className="content-state"><h2>没有待处理邀请</h2><p>新的群组邀请会出现在这里。</p></div>}
         {hasMore ? <button className="secondary-button feed-more" type="button" disabled={Boolean(busyId)} onClick={() => void loadMore()}>加载更多邀请</button> : null}
       </div>

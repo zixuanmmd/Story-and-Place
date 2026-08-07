@@ -1,13 +1,22 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import type { MapEntryWithProfile } from "@/types/database";
-import { TIME_PRECISION_LABELS, VISIBILITY_LABELS } from "@/lib/validation/entry";
+import { TIME_PRECISION_LABELS } from "@/lib/validation/entry";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { EntrySocial } from "@/components/social/entry-social";
 import { EntryTags } from "@/components/entries/entry-tags";
 import { EntryParticipants } from "@/components/entries/entry-participants";
 import { EntryEditHistory } from "@/components/entries/entry-edit-history";
+import {
+  formatUnlockAt,
+  getTimeCapsuleState,
+} from "@/lib/time/time-capsule";
+import {
+  ENTRY_AUDIENCE_PRESENTATION,
+  getEntryAudienceActionLabel,
+} from "@/lib/privacy/presentation";
 
 type EntryDetailProps = {
   entry: MapEntryWithProfile;
@@ -39,17 +48,37 @@ export function EntryDetail({
   onDelete,
   onToggleVisibility,
 }: EntryDetailProps) {
+  const [now, setNow] = useState(() => Date.now());
+  const capsuleState = getTimeCapsuleState(entry.unlock_at, now);
+  useEffect(() => {
+    if (!entry.unlock_at || capsuleState !== "future") return;
+    const remaining = new Date(entry.unlock_at).getTime() - Date.now();
+    const timer = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.min(Math.max(remaining + 100, 100), 2_147_000_000),
+    );
+    return () => window.clearTimeout(timer);
+  }, [capsuleState, entry.unlock_at]);
+
   return (
     <article className="entry-detail">
       <div className="detail-topline">
         <span className={`visibility-badge visibility-badge--${entry.visibility}`}>
-          <b aria-hidden="true">{entry.visibility === "private" ? "▣" : entry.visibility === "group" ? "◇" : "◉"}</b>
-          {VISIBILITY_LABELS[entry.visibility]}
+          <b aria-hidden="true">{ENTRY_AUDIENCE_PRESENTATION[entry.visibility].glyph}</b>
+          {ENTRY_AUDIENCE_PRESENTATION[entry.visibility].shortLabel}
         </span>
         <button className="icon-button" type="button" onClick={onClose} aria-label="关闭详情">×</button>
       </div>
 
       <p className="detail-time">{entry.time_label}</p>
+      {entry.unlock_at ? (
+        <p className={`capsule-notice capsule-notice--${capsuleState}`}>
+          <b aria-hidden="true">⌛</b>
+          {capsuleState === "future"
+            ? `时间胶囊将在 ${formatUnlockAt(entry.unlock_at)} 解锁；此前只有你能看到。`
+            : `这枚时间胶囊已于 ${formatUnlockAt(entry.unlock_at)} 解锁。`}
+        </p>
+      ) : null}
       <h2>{entry.title}</h2>
       <p className="detail-category"><PlaceCategoryIcon category={entry.place_category_slug} /> {getCategoryLabel(entry.place_category_slug)}</p>
       {entry.place_name ? <p className="detail-place">⌖ {entry.place_name}</p> : null}
@@ -63,6 +92,7 @@ export function EntryDetail({
         <div><dt>作者</dt><dd><Link href={`/users/${entry.user_id}`}>{entry.profiles?.display_name ?? "地图旅人"}</Link></dd></div>
         <div><dt>创建于</dt><dd>{formatTimestamp(entry.created_at)}</dd></div>
         <div><dt>更新于</dt><dd>{formatTimestamp(entry.updated_at)}</dd></div>
+        {entry.unlock_at ? <div><dt>胶囊解锁</dt><dd>{formatUnlockAt(entry.unlock_at)}</dd></div> : null}
       </dl>
 
       {canEdit || isOwner ? (
@@ -71,7 +101,7 @@ export function EntryDetail({
           {isOwner ? (
             <>
               <button className="secondary-button" type="button" onClick={onToggleVisibility} disabled={busy}>
-                {busy ? "正在更新…" : entry.visibility === "public" ? "设为私密" : "设为公开"}
+                {busy ? "正在更新…" : getEntryAudienceActionLabel(entry.visibility)}
               </button>
               <button className="text-danger-button" type="button" onClick={onDelete} disabled={busy}>删除</button>
             </>
@@ -80,7 +110,11 @@ export function EntryDetail({
       ) : null}
       {isOwner ? <EntryParticipants entryId={entry.id} /> : null}
       {canCollaborate ? <EntryEditHistory entryId={entry.id} /> : null}
-      <EntrySocial key={entry.id} entry={entry} />
+      {capsuleState === "future" ? (
+        <p className="capsule-social-locked">解锁前不开放点赞和评论。</p>
+      ) : (
+        <EntrySocial key={entry.id} entry={entry} />
+      )}
     </article>
   );
 }

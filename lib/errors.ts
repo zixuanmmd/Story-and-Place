@@ -78,6 +78,15 @@ export function getFriendlyError(
   if (normalizedMessage.includes("active group membership required")) {
     return "你需要保持有效群组成员身份，且群组不能已归档。";
   }
+  if (normalizedMessage.includes("unlock time must be in the future")) {
+    return "时间胶囊的解锁时间必须晚于现在。";
+  }
+  if (normalizedMessage.includes("only the entry owner can change unlock time")) {
+    return "只有故事创建者可以修改时间胶囊的解锁时间。";
+  }
+  if (normalizedMessage.includes("locked capsule is only eligible")) {
+    return "未解锁的时间胶囊只能加入创建者自己的私密路线。";
+  }
   if (code && ERROR_CODE_MESSAGES[code]) return ERROR_CODE_MESSAGES[code];
 
   const status = getErrorStatus(error);

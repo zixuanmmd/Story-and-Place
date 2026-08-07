@@ -18,7 +18,7 @@ const ENTRY_SELECT = `
     tag_id,
     added_by,
     created_at,
-    tags(id, name, slug)
+    tags(id, name, slug, type, semantic_key)
   )
 `;
 
@@ -82,7 +82,7 @@ export async function createEntry(
   tagNames: string[] = [],
 ) {
   const supabase = getSupabaseBrowserClient();
-  const { data, error } = await supabase.rpc("create_entry", {
+  const { data, error } = await supabase.rpc("create_entry_v11", {
     p_entry: entryValuesToPayload(values) as unknown as Json,
     p_tag_names: tagNames,
   });
@@ -139,7 +139,7 @@ export async function updateEntry(
 ) {
   const supabase = getSupabaseBrowserClient();
   const patch = getEntryUpdatePatch(values, editableFields);
-  const { data, error } = await supabase.rpc("update_entry", {
+  const { data, error } = await supabase.rpc("update_entry_v11", {
     p_entry_id: id,
     p_patch: patch as unknown as Json,
     p_tag_names: tagNames,

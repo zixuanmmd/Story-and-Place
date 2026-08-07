@@ -31,6 +31,7 @@ import {
   isDuplicateEmailError,
   resolveRegistrationOutcome,
 } from "@/lib/auth/registration";
+import { ensureOnboardingDecision } from "@/lib/data/onboarding";
 
 type AuthFormProps = {
   mode: "login" | "register";
@@ -63,6 +64,7 @@ export function AuthForm({ mode }: AuthFormProps) {
     }
 
     let signUpAttempted = false;
+    let authenticatedUserId: string | null = null;
     try {
       const supabase = getSupabaseBrowserClient();
       if (isRegister) {
@@ -87,6 +89,7 @@ export function AuthForm({ mode }: AuthFormProps) {
           },
         });
         if (error) throw error;
+        authenticatedUserId = data.user?.id ?? null;
 
         const outcome = resolveRegistrationOutcome({
           hasSession: Boolean(data.session),
@@ -103,17 +106,28 @@ export function AuthForm({ mode }: AuthFormProps) {
         }
         setNotice("注册成功，正在进入地图……");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
+        const { data, error } = await supabase.auth.signInWithPassword({
           email: values.email,
           password: values.password,
         });
         if (error) throw error;
+        authenticatedUserId = data.user.id;
       }
 
       await refreshAuth();
-      router.replace(
-        getSafeRedirectPath(searchParams.get("next"), window.location.origin),
+      let destination = getSafeRedirectPath(
+        searchParams.get("next"),
+        window.location.origin,
       );
+      if (destination === "/" && authenticatedUserId) {
+        try {
+          const decision = await ensureOnboardingDecision(authenticatedUserId);
+          if (decision.shouldOnboard) destination = "/onboarding";
+        } catch (onboardingError) {
+          reportOperationalError(onboardingError, "auth:onboarding-destination");
+        }
+      }
+      router.replace(destination);
       router.refresh();
     } catch (error) {
       reportOperationalError(error, isRegister ? "auth:sign-up" : "auth:sign-in");
@@ -172,7 +186,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         <p className="auth-intro">
           {isRegister
             ? "用一个名字开始，在地点与时间之间留下属于你的记录。"
-            : "登录后可查看私密记录，并继续书写未完成的故事。"}
+            : "登录后可查看只与你相关的故事，并继续书写未完成的内容。"}
         </p>
 
         {isRegister && !requireEmailConfirmation ? (

@@ -4,8 +4,10 @@ import type {
   MapEntryWithProfile,
   PlaceCategorySlug,
 } from "@/types/database";
+import { getTimeCapsuleState } from "@/lib/time/time-capsule";
 
 export type TimelineOrder = "asc" | "desc";
+export type TimelineCapsuleFilter = "all" | "past" | "current" | "future";
 
 export type TimelineFilters = {
   keyword: string;
@@ -16,6 +18,7 @@ export type TimelineFilters = {
   endYear: number | null;
   includeUndated: boolean;
   order: TimelineOrder;
+  capsuleState: TimelineCapsuleFilter;
 };
 
 export const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
@@ -27,6 +30,7 @@ export const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
   endYear: null,
   includeUndated: true,
   order: "desc",
+  capsuleState: "all",
 };
 
 const timelineQuerySchema = z.object({
@@ -38,6 +42,7 @@ const timelineQuerySchema = z.object({
   end: z.coerce.number().int().min(1).max(9999).nullable().catch(null),
   undated: z.enum(["0", "1"]).catch("1"),
   order: z.enum(["asc", "desc"]).catch("desc"),
+  capsule: z.enum(["all", "past", "current", "future"]).catch("all"),
 });
 
 const CATEGORY_SET = new Set<PlaceCategorySlug>([
@@ -62,6 +67,7 @@ export function parseTimelineSearchParams(
     end: read("end") || null,
     undated: read("undated") || "1",
     order: read("order"),
+    capsule: read("capsule"),
   });
   return {
     keyword: parsed.q,
@@ -75,6 +81,7 @@ export function parseTimelineSearchParams(
     endYear: parsed.end,
     includeUndated: parsed.undated === "1",
     order: parsed.order,
+    capsuleState: parsed.capsule,
   };
 }
 
@@ -115,10 +122,15 @@ export function sortTimelineEntries(
 export function filterTimelineEntries(
   entries: MapEntryWithProfile[],
   filters: TimelineFilters,
+  now = Date.now(),
 ) {
   const keyword = filters.keyword.trim().toLocaleLowerCase("zh-CN");
   return sortTimelineEntries(entries.filter((entry) => {
     const year = getTimelineYear(entry);
+    if (
+      filters.capsuleState !== "all" &&
+      getTimeCapsuleState(entry.unlock_at, now) !== filters.capsuleState
+    ) return false;
     if (!filters.includeUndated && year === null) return false;
     if (filters.visibility !== "all" && entry.visibility !== filters.visibility) return false;
     if (filters.categories.length && !filters.categories.includes(entry.place_category_slug)) return false;

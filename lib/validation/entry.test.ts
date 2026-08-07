@@ -14,6 +14,7 @@ const validEntry = {
   group_id: "",
   place_category_slug: "other",
   allow_comments: true,
+  unlock_at: "",
 };
 
 describe("entryFormSchema", () => {
@@ -110,5 +111,16 @@ describe("entryFormSchema", () => {
         occurred_timezone: "Asia/Shanghai",
       }).success,
     ).toBe(true);
+  });
+
+  it("严格校验时间胶囊解锁时间", () => {
+    expect(entryFormSchema.safeParse({
+      ...validEntry,
+      unlock_at: "2035-02-30T12:00",
+    }).success).toBe(false);
+    expect(entryFormSchema.safeParse({
+      ...validEntry,
+      unlock_at: "2035-01-01T12:00",
+    }).success).toBe(true);
   });
 });

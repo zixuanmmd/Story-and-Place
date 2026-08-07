@@ -21,10 +21,11 @@ const FIELD_LABELS: Record<string, string> = {
   occurred_year: "发生年份",
   time_precision: "时间精度",
   time_label: "时间描述",
-  visibility: "可见性",
+  visibility: "谁可以看到",
   group_id: "所属群组",
   place_category_slug: "地点分类",
   allow_comments: "评论设置",
+  unlock_at: "胶囊解锁时间",
   tags: "标签",
 };
 

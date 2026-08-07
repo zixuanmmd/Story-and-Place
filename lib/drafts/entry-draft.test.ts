@@ -15,6 +15,7 @@ const valid: EntryFormValues = {
   group_id: "",
   place_category_slug: "other",
   allow_comments: true,
+  unlock_at: "",
 };
 
 describe("entry draft", () => {
@@ -34,9 +35,11 @@ describe("entry draft", () => {
   it("兼容没有版本号和时区字段的旧草稿", () => {
     const legacy: Record<string, unknown> = { ...valid };
     delete legacy.occurred_timezone;
+    delete legacy.unlock_at;
     expect(parseEntryDraft(JSON.stringify(legacy))).toEqual({
       ...valid,
       occurred_timezone: "",
+      unlock_at: "",
     });
   });
 

@@ -20,11 +20,14 @@ import {
   type MineFilter,
   type MineSort,
 } from "@/lib/data/my-records";
-import { VISIBILITY_LABELS } from "@/lib/validation/entry";
 import type { MapEntryWithProfile } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import {
+  ENTRY_AUDIENCE_PRESENTATION,
+  getEntryAudienceActionLabel,
+} from "@/lib/privacy/presentation";
 
 export function MyRecordsView() {
   const { user, loading: authLoading, configured } = useAuth();
@@ -138,9 +141,9 @@ function MyRecordsForScope({
         entry.visibility === "public" ? "private" : "public",
       );
       entryQuery.upsert(updated);
-      setStatus(updated.visibility === "public" ? "记录已设为公开。" : "记录已设为私密。 ");
+      setStatus(updated.visibility === "public" ? "这条故事现在所有人都可以看到。" : "这条故事现在只对你和已接受邀请的共同经历者开放。");
     } catch (toggleError) {
-      setStatus(getFriendlyError(toggleError, "可见性更新失败。"));
+      setStatus(getFriendlyError(toggleError, "阅读范围更新失败。"));
     } finally {
       setBusyId(null);
     }
@@ -173,7 +176,7 @@ function MyRecordsForScope({
             <span aria-hidden="true">⌕</span>
             <input type="search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标题、内容、地点或时间" />
           </label>
-          <label><span>可见性</span><select value={visibility} onChange={(event) => setVisibility(event.target.value as MineFilter)}><option value="all">全部</option><option value="public">公开</option><option value="private">私密</option><option value="group">群组</option></select></label>
+          <label><span>谁可以看到</span><select value={visibility} onChange={(event) => setVisibility(event.target.value as MineFilter)}><option value="all">全部阅读范围</option><option value="public">所有人可见</option><option value="private">我和受邀者可见</option><option value="group">群组成员可见</option></select></label>
           <label><span>排序</span><select value={sort} onChange={(event) => setSort(event.target.value as MineSort)}><option value="updated">最近更新</option><option value="occurred">事件时间</option></select></label>
         </section>
 
@@ -185,7 +188,7 @@ function MyRecordsForScope({
               <article className="record-card" key={entry.id}>
                 <div className="record-main">
                   <div className="record-card-topline">
-                    <span className={`visibility-badge visibility-badge--${entry.visibility}`}><b aria-hidden="true">{entry.visibility === "private" ? "▣" : entry.visibility === "group" ? "◇" : "◉"}</b>{VISIBILITY_LABELS[entry.visibility]}</span>
+                    <span className={`visibility-badge visibility-badge--${entry.visibility}`}><b aria-hidden="true">{ENTRY_AUDIENCE_PRESENTATION[entry.visibility].glyph}</b>{ENTRY_AUDIENCE_PRESENTATION[entry.visibility].shortLabel}</span>
                     <time>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(entry.updated_at))} 更新</time>
                   </div>
                   <h2>{entry.title}</h2>
@@ -195,7 +198,7 @@ function MyRecordsForScope({
                 <div className="record-actions">
                   <Link className="secondary-button nav-link" href={`/?entry=${entry.id}`}>地图定位</Link>
                   <Link className="secondary-button nav-link" href={`/?entry=${entry.id}&edit=1`}>编辑</Link>
-                  <button className="secondary-button" type="button" disabled={busyId === entry.id} onClick={() => void toggle(entry)}>{busyId === entry.id ? "更新中…" : entry.visibility === "public" ? "设为私密" : "设为公开"}</button>
+                  <button className="secondary-button" type="button" disabled={busyId === entry.id} onClick={() => void toggle(entry)}>{busyId === entry.id ? "更新中…" : getEntryAudienceActionLabel(entry.visibility)}</button>
                   <button className="text-danger-button" type="button" disabled={busyId === entry.id} onClick={() => setDeleteTarget(entry)}>删除</button>
                 </div>
               </article>
@@ -212,7 +215,7 @@ function MyRecordsForScope({
     <main className="content-page">
       <AppHeader />
       <div className="content-container">
-        <div className="page-heading"><div><p className="eyebrow">YOUR ARCHIVE</p><h1>我的记录</h1><p>管理你留在地图上的全部公开与私密故事。</p></div>{user ? <Link className="primary-button nav-link" href="/">＋ 新建记录</Link> : null}</div>
+        <div className="page-heading"><div><p className="eyebrow">YOUR ARCHIVE</p><h1>我的记录</h1><p>管理你留在地图上的故事，以及每条故事的阅读范围。</p></div>{user ? <Link className="primary-button nav-link" href="/">＋ 新建记录</Link> : null}</div>
         {status ? <div className="inline-success" role="status">{status}</div> : null}
         {content}
       </div>

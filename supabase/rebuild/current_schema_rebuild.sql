@@ -3965,6 +3965,1991 @@ to anon, authenticated;
 notify pgrst, 'reload schema';
 
 -- ============================================================
+-- MIGRATION: 202608040001_v11_schema_foundation.sql
+-- ============================================================
+-- Story-and-Place v1.1 schema foundation.
+--
+-- This migration is deliberately structural only. It does not enable the
+-- Emotion Tags or Time Capsule product flows, replace permission helpers, or
+-- grant clients access to newly added write columns. Later feature migrations
+-- will activate each module together with its complete RLS/RPC/trigger rules.
+
+do $$
+begin
+  if to_regclass('public.tags') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.story_route_items') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or to_regprocedure(
+      'public.save_story_route(uuid,text,text,text,uuid,boolean,jsonb)'
+    ) is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'v1.1 foundation requires all migrations through 202607300002';
+  end if;
+end;
+$$;
+
+alter table public.tags
+  add column type text not null default 'normal',
+  add column semantic_key text;
+
+alter table public.tags
+  add constraint tags_type_values check (
+    type in ('normal', 'emotion', 'theme', 'character', 'event')
+  ),
+  add constraint tags_semantic_key_format check (
+    semantic_key is null
+    or (
+      char_length(semantic_key) between 2 and 48
+      and semantic_key ~ '^[a-z][a-z0-9]*(-[a-z0-9]+)*$'
+    )
+  ),
+  add constraint tags_type_semantic_key_consistency check (
+    (type = 'normal' and semantic_key is null)
+    or (type = 'emotion' and semantic_key is not null)
+    or type in ('theme', 'character', 'event')
+  );
+
+create unique index tags_type_semantic_key_uidx
+  on public.tags(type, semantic_key)
+  where semantic_key is not null;
+
+alter table public.map_entries
+  add column unlock_at timestamptz;
+
+create index map_entries_unlock_at_idx
+  on public.map_entries(unlock_at, id)
+  where unlock_at is not null;
+
+alter table public.story_route_items
+  add column relation_type text not null default 'normal',
+  add constraint story_route_items_relation_type_values check (
+    relation_type in (
+      'normal', 'cause', 'memory', 'contrast', 'turning_point'
+    )
+  );
+
+comment on column public.tags.type is
+  'v1.1 tag classification. Existing and legacy-created tags remain normal.';
+comment on column public.tags.semantic_key is
+  'Optional stable ASCII semantic route key; required for emotion tags.';
+comment on column public.map_entries.unlock_at is
+  'Time Capsule unlock instant. Null retains the existing visibility model.';
+comment on column public.story_route_items.relation_type is
+  'Narrative relation from the previous route node; legacy nodes are normal.';
+
+-- Column-level INSERT/UPDATE grants intentionally do not include unlock_at,
+-- tags.type, tags.semantic_key, or story_route_items.relation_type. Existing
+-- RPCs therefore continue to produce only legacy-compatible defaults until
+-- the corresponding v1.1 feature migration is deployed.
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608040002_emotion_tags.sql
+-- ============================================================
+-- Story-and-Place v1.1: activate typed tag discovery and public emotions.
+--
+-- Existing tag write paths remain unchanged. Known emotion names are promoted
+-- in place so their entry_tags relationships and legacy /tags/:slug URLs stay
+-- valid. Public emotion RPCs deliberately return public entries only.
+
+do $$
+begin
+  if to_regclass('public.tags') is null
+    or to_regclass('public.entry_tags') is null
+    or to_regclass('public.map_entries') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'tags'
+        and column_name = 'type'
+    )
+    or not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'tags'
+        and column_name = 'semantic_key'
+    )
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'emotion tags require migration 202608040001';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'tags'
+      and policyname = 'tags_visible_with_readable_entries'
+  ) or not exists (
+    select 1
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'entry_tags'
+      and policyname = 'entry_tags_visible_with_entry'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'emotion tags require the existing tag RLS policies';
+  end if;
+end;
+$$;
+
+-- Preserve existing IDs and slugs when a normal tag already uses one of these
+-- names. This keeps every existing entry_tags relationship intact.
+insert into public.tags (
+  name,
+  normalized_name,
+  type,
+  semantic_key,
+  created_by
+)
+values
+  ('孤独', public.normalize_tag_name('孤独'), 'emotion', 'loneliness', null),
+  ('重逢', public.normalize_tag_name('重逢'), 'emotion', 'reunion', null),
+  ('成长', public.normalize_tag_name('成长'), 'emotion', 'growth', null),
+  ('遗憾', public.normalize_tag_name('遗憾'), 'emotion', 'regret', null),
+  ('失去', public.normalize_tag_name('失去'), 'emotion', 'loss', null),
+  ('希望', public.normalize_tag_name('希望'), 'emotion', 'hope', null),
+  ('恐惧', public.normalize_tag_name('恐惧'), 'emotion', 'fear', null)
+on conflict (normalized_name) do update
+set
+  type = excluded.type,
+  semantic_key = excluded.semantic_key;
+
+create or replace function public.get_visible_tags(
+  p_tag_type text default null,
+  p_offset integer default 0,
+  p_limit integer default 51
+)
+returns table (
+  slug text,
+  name text,
+  tag_type text,
+  semantic_key text,
+  entry_count bigint
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    tag.slug,
+    tag.name::text,
+    tag.type,
+    tag.semantic_key,
+    count(*)::bigint
+  from public.tags tag
+  join public.entry_tags entry_tag on entry_tag.tag_id = tag.id
+  join public.map_entries entry on entry.id = entry_tag.entry_id
+  where (
+      p_tag_type is null
+      or p_tag_type in ('normal', 'emotion', 'theme', 'character', 'event')
+        and tag.type = p_tag_type
+    )
+    and public.can_read_entry(entry.id)
+  group by tag.id, tag.slug, tag.name, tag.type, tag.semantic_key
+  order by count(*) desc, tag.normalized_name asc, tag.id asc
+  offset greatest(coalesce(p_offset, 0), 0)
+  limit least(greatest(coalesce(p_limit, 51), 1), 51);
+$$;
+
+create or replace function public.get_typed_tag_entries(
+  p_tag_slug text,
+  p_tag_type text default null,
+  p_offset integer default 0,
+  p_limit integer default 51
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.tags tag
+  join public.entry_tags entry_tag on entry_tag.tag_id = tag.id
+  join public.map_entries entry on entry.id = entry_tag.entry_id
+  where tag.slug = p_tag_slug
+    and (
+      p_tag_type is null
+      or p_tag_type in ('normal', 'emotion', 'theme', 'character', 'event')
+        and tag.type = p_tag_type
+    )
+    and public.can_read_entry(entry.id)
+  order by entry.updated_at desc, entry.id desc
+  offset greatest(coalesce(p_offset, 0), 0)
+  limit least(greatest(coalesce(p_limit, 51), 1), 51);
+$$;
+
+create or replace function public.get_visible_tag_summary_v11(
+  p_tag_slug text,
+  p_tag_type text default null
+)
+returns table (
+  slug text,
+  name text,
+  tag_type text,
+  semantic_key text,
+  entry_count bigint
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    tag.slug,
+    tag.name::text,
+    tag.type,
+    tag.semantic_key,
+    count(*)::bigint
+  from public.tags tag
+  join public.entry_tags entry_tag on entry_tag.tag_id = tag.id
+  join public.map_entries entry on entry.id = entry_tag.entry_id
+  where tag.slug = p_tag_slug
+    and (
+      p_tag_type is null
+      or p_tag_type in ('normal', 'emotion', 'theme', 'character', 'event')
+        and tag.type = p_tag_type
+    )
+    and public.can_read_entry(entry.id)
+  group by tag.id, tag.slug, tag.name, tag.type, tag.semantic_key;
+$$;
+
+create or replace function public.get_public_emotion_entries(
+  p_emotion text,
+  p_offset integer default 0,
+  p_limit integer default 51
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.tags tag
+  join public.entry_tags entry_tag on entry_tag.tag_id = tag.id
+  join public.map_entries entry on entry.id = entry_tag.entry_id
+  where tag.type = 'emotion'
+    and tag.semantic_key = lower(pg_catalog.btrim(p_emotion))
+    and entry.visibility = 'public'
+    and public.can_read_entry(entry.id)
+  order by entry.updated_at desc, entry.id desc
+  offset greatest(coalesce(p_offset, 0), 0)
+  limit least(greatest(coalesce(p_limit, 51), 1), 51);
+$$;
+
+create or replace function public.get_public_emotion_summary(p_emotion text)
+returns table (
+  slug text,
+  name text,
+  tag_type text,
+  semantic_key text,
+  entry_count bigint
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    tag.slug,
+    tag.name::text,
+    tag.type,
+    tag.semantic_key,
+    count(*)::bigint
+  from public.tags tag
+  join public.entry_tags entry_tag on entry_tag.tag_id = tag.id
+  join public.map_entries entry on entry.id = entry_tag.entry_id
+  where tag.type = 'emotion'
+    and tag.semantic_key = lower(pg_catalog.btrim(p_emotion))
+    and entry.visibility = 'public'
+    and public.can_read_entry(entry.id)
+  group by tag.id, tag.slug, tag.name, tag.type, tag.semantic_key;
+$$;
+
+alter table public.tags enable row level security;
+alter table public.entry_tags enable row level security;
+
+revoke all on function public.get_visible_tags(text, integer, integer) from public;
+revoke all on function public.get_typed_tag_entries(text, text, integer, integer) from public;
+revoke all on function public.get_visible_tag_summary_v11(text, text) from public;
+revoke all on function public.get_public_emotion_entries(text, integer, integer) from public;
+revoke all on function public.get_public_emotion_summary(text) from public;
+
+grant execute on function public.get_visible_tags(text, integer, integer)
+to anon, authenticated;
+grant execute on function public.get_typed_tag_entries(text, text, integer, integer)
+to anon, authenticated;
+grant execute on function public.get_visible_tag_summary_v11(text, text)
+to anon, authenticated;
+grant execute on function public.get_public_emotion_entries(text, integer, integer)
+to anon, authenticated;
+grant execute on function public.get_public_emotion_summary(text)
+to anon, authenticated;
+
+comment on function public.get_public_emotion_entries(text, integer, integer) is
+  'Returns public entries only; authenticated private/group visibility never expands this public emotion page.';
+comment on function public.get_visible_tags(text, integer, integer) is
+  'Lists tag counts only across entries currently readable by the caller.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050001_time_capsules.sql
+-- ============================================================
+-- Story-and-Place v1.1: Time Capsules.
+-- Future capsules are readable by their creator only. Group creators must
+-- also retain active membership. At unlock_at the existing visibility model
+-- becomes effective automatically on the next database query.
+
+do $$
+begin
+  if to_regclass('public.map_entries') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or to_regprocedure('public.can_interact_entry(uuid)') is null
+    or to_regprocedure('public.can_collaborate_entry(uuid)') is null
+    or to_regprocedure('public.can_edit_entry_field(uuid,text)') is null
+    or to_regprocedure('public.can_read_entry_edit_log(uuid,timestamp with time zone)') is null
+    or to_regprocedure('public.create_entry(jsonb,text[])') is null
+    or to_regprocedure('public.update_entry(uuid,jsonb,text[])') is null
+    or to_regprocedure('public.save_story_route(uuid,text,text,text,uuid,boolean,jsonb)') is null
+    or not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'map_entries'
+        and column_name = 'unlock_at'
+    )
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'time capsules require all migrations through 202608040002';
+  end if;
+end;
+$$;
+
+create or replace function public.can_read_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (
+        (
+          entry.unlock_at > now()
+          and entry.user_id = (select auth.uid())
+          and (
+            entry.visibility <> 'group'
+            or public.is_active_group_member(entry.group_id)
+          )
+        )
+        or (
+          (entry.unlock_at is null or entry.unlock_at <= now())
+          and (
+            entry.visibility = 'public'
+            or (
+              entry.visibility = 'private'
+              and (
+                entry.user_id = (select auth.uid())
+                or exists (
+                  select 1
+                  from public.entry_participants participant
+                  where participant.entry_id = entry.id
+                    and participant.user_id = (select auth.uid())
+                    and participant.status = 'accepted'
+                )
+              )
+            )
+            or (
+              entry.visibility = 'group'
+              and public.is_active_group_member(entry.group_id)
+            )
+          )
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_collaborate_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null and exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (
+        entry.visibility <> 'group'
+        or public.is_active_group_member(entry.group_id)
+      )
+      and (
+        entry.user_id = (select auth.uid())
+        or (
+          (entry.unlock_at is null or entry.unlock_at <= now())
+          and exists (
+            select 1
+            from public.entry_participants participant
+            where participant.entry_id = entry.id
+              and participant.user_id = (select auth.uid())
+              and participant.status = 'accepted'
+          )
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_edit_entry_field(
+  p_entry_id uuid,
+  p_field text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (
+        entry.visibility <> 'group'
+        or public.is_active_group_member(entry.group_id)
+      )
+      and (
+        entry.user_id = (select auth.uid())
+        or (
+          (entry.unlock_at is null or entry.unlock_at <= now())
+          and exists (
+            select 1
+            from public.entry_participants participant
+            where participant.entry_id = entry.id
+              and participant.user_id = (select auth.uid())
+              and participant.status = 'accepted'
+              and p_field = any(participant.editable_fields)
+          )
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_read_entry_edit_log(
+  p_entry_id uuid,
+  p_created_at timestamptz
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null and exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (
+        entry.visibility <> 'group'
+        or public.is_active_group_member(entry.group_id)
+      )
+      and (
+        entry.user_id = (select auth.uid())
+        or (
+          (entry.unlock_at is null or entry.unlock_at <= now())
+          and exists (
+            select 1
+            from public.entry_participants participant
+            where participant.entry_id = entry.id
+              and participant.user_id = (select auth.uid())
+              and participant.status = 'accepted'
+              and participant.responded_at <= p_created_at
+          )
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_interact_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null and exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (entry.unlock_at is null or entry.unlock_at <= now())
+      and public.can_read_entry(entry.id)
+      and entry.visibility in ('public', 'group')
+  );
+$$;
+
+create or replace function public.create_entry_v11(
+  p_entry jsonb,
+  p_tag_names text[] default '{}'::text[]
+)
+returns public.map_entries
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target_visibility text;
+  target_group_id uuid;
+  target_unlock_at timestamptz;
+  created_entry public.map_entries%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if jsonb_typeof(coalesce(p_entry, '{}'::jsonb)) <> 'object' then
+    raise exception using errcode = '22023', message = 'entry payload must be an object';
+  end if;
+  if exists (
+    select 1
+    from jsonb_object_keys(p_entry) key
+    where key not in (
+      'title', 'content', 'place_name', 'latitude', 'longitude',
+      'occurred_local', 'occurred_timezone', 'occurred_date',
+      'occurred_year', 'time_precision', 'time_label', 'visibility',
+      'group_id', 'place_category_slug', 'allow_comments', 'unlock_at'
+    )
+  ) then
+    raise exception using errcode = '22023', message = 'entry payload contains restricted fields';
+  end if;
+
+  target_unlock_at := (p_entry ->> 'unlock_at')::timestamptz;
+  if target_unlock_at is not null and target_unlock_at <= now() then
+    raise exception using errcode = '23514', message = 'unlock time must be in the future';
+  end if;
+
+  target_visibility := coalesce(p_entry ->> 'visibility', 'private');
+  target_group_id := (p_entry ->> 'group_id')::uuid;
+  perform public.assert_entry_rpc_group_target(
+    target_visibility,
+    target_group_id
+  );
+
+  insert into public.map_entries (
+    user_id,
+    title,
+    content,
+    place_name,
+    latitude,
+    longitude,
+    occurred_local,
+    occurred_timezone,
+    occurred_date,
+    occurred_year,
+    time_precision,
+    time_label,
+    visibility,
+    group_id,
+    place_category_slug,
+    allow_comments,
+    unlock_at
+  )
+  values (
+    actor,
+    p_entry ->> 'title',
+    p_entry ->> 'content',
+    p_entry ->> 'place_name',
+    (p_entry ->> 'latitude')::double precision,
+    (p_entry ->> 'longitude')::double precision,
+    (p_entry ->> 'occurred_local')::timestamp without time zone,
+    p_entry ->> 'occurred_timezone',
+    (p_entry ->> 'occurred_date')::date,
+    (p_entry ->> 'occurred_year')::integer,
+    p_entry ->> 'time_precision',
+    p_entry ->> 'time_label',
+    target_visibility,
+    target_group_id,
+    coalesce(p_entry ->> 'place_category_slug', 'other'),
+    coalesce((p_entry ->> 'allow_comments')::boolean, true),
+    target_unlock_at
+  )
+  returning * into created_entry;
+
+  perform public.replace_entry_tags(
+    created_entry.id,
+    coalesce(p_tag_names, '{}'::text[]),
+    actor,
+    false
+  );
+  return created_entry;
+end;
+$$;
+
+create or replace function public.update_entry_v11(
+  p_entry_id uuid,
+  p_patch jsonb,
+  p_tag_names text[] default null
+)
+returns public.map_entries
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  existing public.map_entries%rowtype;
+  updated_entry public.map_entries%rowtype;
+  target_unlock_at timestamptz;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if jsonb_typeof(coalesce(p_patch, '{}'::jsonb)) <> 'object' then
+    raise exception using errcode = '22023', message = 'entry patch must be an object';
+  end if;
+  if exists (
+    select 1
+    from jsonb_object_keys(p_patch) key
+    where key not in (
+      'title', 'content', 'place_name', 'latitude', 'longitude',
+      'occurred_local', 'occurred_timezone', 'occurred_date',
+      'occurred_year', 'time_precision', 'time_label', 'visibility',
+      'group_id', 'place_category_slug', 'allow_comments', 'unlock_at'
+    )
+  ) then
+    raise exception using errcode = '22023', message = 'entry patch contains restricted fields';
+  end if;
+
+  select * into existing
+  from public.map_entries
+  where id = p_entry_id
+  for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'entry not found';
+  end if;
+  if p_patch ? 'unlock_at' and existing.user_id <> actor then
+    raise exception using errcode = '42501', message = 'only the entry owner can change unlock time';
+  end if;
+
+  target_unlock_at := case
+    when p_patch ? 'unlock_at' then (p_patch ->> 'unlock_at')::timestamptz
+    else existing.unlock_at
+  end;
+  if target_unlock_at is distinct from existing.unlock_at
+    and target_unlock_at is not null
+    and target_unlock_at <= now()
+  then
+    raise exception using errcode = '23514', message = 'unlock time must be in the future';
+  end if;
+
+  if p_patch ? 'unlock_at' and target_unlock_at is distinct from existing.unlock_at then
+    update public.map_entries
+    set unlock_at = target_unlock_at
+    where id = p_entry_id
+    returning * into updated_entry;
+  end if;
+  updated_entry := public.update_entry(
+    p_entry_id,
+    p_patch - 'unlock_at',
+    p_tag_names
+  );
+  return updated_entry;
+end;
+$$;
+
+create or replace function public.get_social_feed_v11(
+  p_cursor_created_at timestamptz default null,
+  p_cursor_id uuid default null,
+  p_limit integer default 20
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  title text,
+  content text,
+  place_name text,
+  latitude double precision,
+  longitude double precision,
+  time_label text,
+  visibility text,
+  group_id uuid,
+  place_category_slug text,
+  allow_comments boolean,
+  unlock_at timestamptz,
+  created_at timestamptz,
+  updated_at timestamptz,
+  author_display_name text,
+  author_avatar_url text,
+  group_name text,
+  group_slug text,
+  like_count bigint,
+  comment_count bigint,
+  user_liked boolean
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    entry.id,
+    entry.user_id,
+    entry.title::text,
+    entry.content,
+    entry.place_name,
+    entry.latitude,
+    entry.longitude,
+    entry.time_label,
+    entry.visibility,
+    entry.group_id,
+    entry.place_category_slug,
+    entry.allow_comments,
+    entry.unlock_at,
+    entry.created_at,
+    entry.updated_at,
+    profile.display_name,
+    profile.avatar_url,
+    target_group.name::text,
+    target_group.slug,
+    (select count(*) from public.entry_likes likes where likes.entry_id = entry.id),
+    (
+      select count(*)
+      from public.entry_comments comment
+      where comment.entry_id = entry.id and comment.deleted_at is null
+    ),
+    exists (
+      select 1
+      from public.entry_likes mine
+      where mine.entry_id = entry.id
+        and mine.user_id = (select auth.uid())
+    )
+  from public.map_entries entry
+  join public.profiles profile on profile.id = entry.user_id
+  left join public.groups target_group on target_group.id = entry.group_id
+  where (select auth.uid()) is not null
+    and public.can_read_entry(entry.id)
+    and (
+      (
+        entry.user_id = (select auth.uid())
+        and entry.visibility in ('public', 'private')
+      )
+      or (
+        entry.visibility = 'public'
+        and exists (
+          select 1
+          from public.follows follow
+          where follow.follower_id = (select auth.uid())
+            and follow.following_id = entry.user_id
+        )
+      )
+      or (
+        entry.visibility = 'group'
+        and public.is_active_group_member(entry.group_id)
+      )
+    )
+    and (
+      p_cursor_created_at is null
+      or (entry.created_at, entry.id) < (p_cursor_created_at, p_cursor_id)
+    )
+  order by entry.created_at desc, entry.id desc
+  limit least(greatest(p_limit, 1), 50);
+$$;
+
+create or replace function public.get_timeline_entries_v11(
+  p_scope text,
+  p_target_id uuid,
+  p_order text default 'desc',
+  p_visibility text default null,
+  p_category_slugs text[] default null,
+  p_author_id uuid default null,
+  p_keyword text default null,
+  p_start_year integer default null,
+  p_end_year integer default null,
+  p_include_undated boolean default true,
+  p_capsule_state text default null,
+  p_offset integer default 0,
+  p_limit integer default 51
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  cross join lateral (
+    select coalesce(
+      entry.occurred_year,
+      case
+        when entry.time_precision = 'approximate' then
+          (
+            regexp_match(
+              entry.time_label,
+              '(^|[^0-9])([1-9][0-9]{3})([^0-9]|$)'
+            )
+          )[2]::integer
+        else null
+      end
+    ) as event_year
+  ) timeline
+  where p_scope in ('mine', 'user', 'group')
+    and (
+      (
+        p_scope = 'mine'
+        and p_target_id = (select auth.uid())
+        and (
+          entry.user_id = p_target_id
+          or exists (
+            select 1
+            from public.entry_participants participant
+            where participant.entry_id = entry.id
+              and participant.user_id = p_target_id
+              and participant.status = 'accepted'
+              and (
+                entry.visibility <> 'group'
+                or public.is_active_group_member(entry.group_id)
+              )
+          )
+        )
+      )
+      or (
+        p_scope = 'user'
+        and entry.user_id = p_target_id
+        and entry.visibility = 'public'
+      )
+      or (
+        p_scope = 'group'
+        and entry.group_id = p_target_id
+        and entry.visibility = 'group'
+      )
+    )
+    and (p_visibility is null or entry.visibility = p_visibility)
+    and (
+      p_category_slugs is null
+      or entry.place_category_slug = any(p_category_slugs)
+    )
+    and (p_author_id is null or entry.user_id = p_author_id)
+    and (
+      nullif(btrim(coalesce(p_keyword, '')), '') is null
+      or position(
+        lower(btrim(p_keyword))
+        in lower(concat_ws(
+          ' ',
+          entry.title,
+          entry.content,
+          entry.place_name,
+          entry.time_label
+        ))
+      ) > 0
+    )
+    and (p_include_undated or timeline.event_year is not null)
+    and (p_start_year is null or timeline.event_year >= p_start_year)
+    and (p_end_year is null or timeline.event_year <= p_end_year)
+    and (
+      p_capsule_state is null
+      or (p_capsule_state = 'current' and entry.unlock_at is null)
+      or (
+        p_capsule_state = 'past'
+        and entry.unlock_at is not null
+        and entry.unlock_at <= now()
+      )
+      or (p_capsule_state = 'future' and entry.unlock_at > now())
+    )
+  order by
+    (timeline.event_year is null) asc,
+    case when p_order = 'asc' then timeline.event_year end asc,
+    case when p_order <> 'asc' then timeline.event_year end desc,
+    case when p_order = 'asc'
+      then coalesce(entry.occurred_local, entry.occurred_date::timestamp)
+    end asc nulls last,
+    case when p_order <> 'asc'
+      then coalesce(entry.occurred_local, entry.occurred_date::timestamp)
+    end desc nulls last,
+    case when p_order = 'asc' then entry.created_at end asc,
+    case when p_order <> 'asc' then entry.created_at end desc,
+    entry.id asc
+  offset greatest(coalesce(p_offset, 0), 0)
+  limit least(greatest(coalesce(p_limit, 51), 1), 51);
+$$;
+
+create or replace function public.protect_routes_for_time_capsule()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.unlock_at > now()
+    and (old.unlock_at is null or old.unlock_at <= now())
+  then
+    -- A route owned by somebody else must not retain a hidden node whose
+    -- node_count would reveal that the newly locked entry still exists.
+    delete from public.story_route_items item
+    using public.story_routes route
+    where item.route_id = route.id
+      and item.entry_id = new.id
+      and route.created_by <> new.user_id;
+
+    update public.story_routes route
+    set
+      visibility = 'private',
+      group_id = null,
+      privacy_downgraded_at = now()
+    where route.visibility <> 'private'
+      and route.created_by = new.user_id
+      and exists (
+        select 1
+        from public.story_route_items item
+        where item.route_id = route.id
+          and item.entry_id = new.id
+      );
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists map_entries_protect_routes_for_capsule
+on public.map_entries;
+create trigger map_entries_protect_routes_for_capsule
+after update of unlock_at on public.map_entries
+for each row execute function public.protect_routes_for_time_capsule();
+
+create or replace function public.guard_capsule_story_route_item()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if exists (
+    select 1
+    from public.map_entries entry
+    join public.story_routes route on route.id = new.route_id
+    where entry.id = new.entry_id
+      and entry.unlock_at > now()
+      and (
+        route.visibility <> 'private'
+        or route.created_by <> entry.user_id
+      )
+  ) then
+    raise exception using
+      errcode = '42501',
+      message = 'locked capsule is only eligible for its owner private route';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists story_route_items_guard_capsule
+on public.story_route_items;
+create trigger story_route_items_guard_capsule
+before insert or update on public.story_route_items
+for each row execute function public.guard_capsule_story_route_item();
+
+revoke all on function public.can_read_entry(uuid) from public;
+revoke all on function public.can_collaborate_entry(uuid) from public;
+revoke all on function public.can_edit_entry_field(uuid, text) from public;
+revoke all on function public.can_read_entry_edit_log(uuid, timestamptz) from public;
+revoke all on function public.can_interact_entry(uuid) from public;
+revoke all on function public.create_entry_v11(jsonb, text[]) from public, anon;
+revoke all on function public.update_entry_v11(uuid, jsonb, text[]) from public, anon;
+revoke all on function public.get_social_feed_v11(timestamptz, uuid, integer)
+from public, anon;
+revoke all on function public.get_timeline_entries_v11(
+  text, uuid, text, text, text[], uuid, text,
+  integer, integer, boolean, text, integer, integer
+) from public;
+revoke all on function public.protect_routes_for_time_capsule() from public;
+revoke all on function public.guard_capsule_story_route_item() from public;
+
+grant execute on function public.can_read_entry(uuid) to anon, authenticated;
+grant execute on function public.can_collaborate_entry(uuid) to authenticated;
+grant execute on function public.can_edit_entry_field(uuid, text) to authenticated;
+grant execute on function public.can_read_entry_edit_log(uuid, timestamptz)
+to authenticated;
+grant execute on function public.can_interact_entry(uuid) to authenticated;
+grant execute on function public.create_entry_v11(jsonb, text[]) to authenticated;
+grant execute on function public.update_entry_v11(uuid, jsonb, text[])
+to authenticated;
+grant execute on function public.get_social_feed_v11(timestamptz, uuid, integer)
+to authenticated;
+grant execute on function public.get_timeline_entries_v11(
+  text, uuid, text, text, text[], uuid, text,
+  integer, integer, boolean, text, integer, integer
+) to anon, authenticated;
+
+comment on function public.can_read_entry(uuid) is
+  'Canonical entry read boundary. Future capsules require creator identity; group creators also require active membership.';
+comment on function public.create_entry_v11(jsonb, text[]) is
+  'Creates a legacy-compatible entry plus an optional future unlock instant.';
+comment on function public.update_entry_v11(uuid, jsonb, text[]) is
+  'Updates entries while reserving unlock_at changes for the creator.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050002_life_paths.sql
+-- ============================================================
+-- Story-and-Place v1.1: public Life Paths.
+--
+-- Life Paths are derived from existing public, unlocked map entries. No story
+-- content or coordinates are copied into a new table. Existing UUID profile
+-- links remain valid while profiles gain a stable, public username.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.story_routes') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'map_entries'
+        and column_name = 'unlock_at'
+    )
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'life paths require all migrations through 202608050001';
+  end if;
+end;
+$$;
+
+alter table public.profiles
+  add column if not exists username text;
+
+-- Prefer a readable ASCII display name when it already resembles a handle.
+-- Chinese or otherwise non-handle display names receive a deterministic
+-- traveler-<uuid> value. Collision handling is deterministic and never
+-- deletes or merges an existing profile.
+with username_candidates as (
+  select
+    profile.id,
+    case
+      when lower(btrim(profile.display_name))
+        ~ '^[a-z][a-z0-9]*(?:[ _-][a-z0-9]+)*$'
+      then left(
+        regexp_replace(
+          lower(btrim(profile.display_name)),
+          '[ _-]+',
+          '-',
+          'g'
+        ),
+        48
+      )
+      else 'traveler-' || replace(profile.id::text, '-', '')
+    end as base_username
+  from public.profiles profile
+  where profile.username is null
+), ranked_usernames as (
+  select
+    candidate.*,
+    row_number() over (
+      partition by candidate.base_username
+      order by candidate.id
+    ) as collision_rank
+  from username_candidates candidate
+)
+update public.profiles profile
+set username = case
+  when ranked.collision_rank = 1 then ranked.base_username
+  else left(ranked.base_username, 15) || '-' || replace(profile.id::text, '-', '')
+end
+from ranked_usernames ranked
+where profile.id = ranked.id
+  and profile.username is null;
+
+alter table public.profiles
+  alter column username set default (
+    'traveler-' || replace(gen_random_uuid()::text, '-', '')
+  ),
+  alter column username set not null;
+
+-- Keep registration compatible with the existing auth.users trigger while
+-- making the generated handle deterministic for new accounts. Email remains
+-- exclusively in auth.users.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  requested_name text;
+begin
+  requested_name :=
+    public.format_display_name(new.raw_user_meta_data ->> 'display_name');
+
+  if char_length(requested_name) not between 1 and 80 then
+    requested_name := '地图旅人-' || new.id::text;
+  end if;
+
+  insert into public.profiles (id, username, display_name)
+  values (
+    new.id,
+    'traveler-' || replace(new.id::text, '-', ''),
+    requested_name
+  );
+
+  return new;
+end;
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'profiles_username_format'
+      and conrelid = 'public.profiles'::regclass
+  ) then
+    alter table public.profiles
+      add constraint profiles_username_format check (
+        char_length(username) between 3 and 48
+        and username = lower(username)
+        and username ~ '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
+      );
+  end if;
+end;
+$$;
+
+create unique index if not exists profiles_username_uidx
+  on public.profiles(username);
+
+create index if not exists map_entries_public_life_path_idx
+  on public.map_entries(
+    user_id,
+    unlock_at,
+    occurred_year,
+    occurred_date,
+    created_at,
+    id
+  )
+  where visibility = 'public';
+
+create or replace function public.resolve_public_profile(
+  p_identifier text
+)
+returns table (
+  id uuid,
+  username text,
+  display_name text,
+  avatar_url text,
+  bio text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    profile.id,
+    profile.username,
+    profile.display_name,
+    profile.avatar_url,
+    profile.bio,
+    profile.created_at,
+    profile.updated_at
+  from public.profiles profile
+  where char_length(btrim(coalesce(p_identifier, ''))) between 3 and 48
+    and (
+      profile.username = lower(btrim(p_identifier))
+      or profile.id::text = lower(btrim(p_identifier))
+    )
+  limit 1;
+$$;
+
+create or replace function public.get_public_life_path_entries(
+  p_profile_id uuid,
+  p_offset integer default 0,
+  p_limit integer default 201
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  cross join lateral (
+    select coalesce(
+      entry.occurred_year,
+      extract(year from entry.occurred_date)::integer,
+      extract(year from entry.occurred_local)::integer,
+      extract(year from entry.occurred_at)::integer
+    ) as event_year
+  ) event_time
+  where entry.user_id = p_profile_id
+    and entry.visibility = 'public'
+    and (entry.unlock_at is null or entry.unlock_at <= now())
+    and public.can_read_entry(entry.id)
+  order by
+    (event_time.event_year is null) asc,
+    event_time.event_year asc,
+    coalesce(entry.occurred_local, entry.occurred_date::timestamp) asc nulls last,
+    entry.created_at asc,
+    entry.id asc
+  offset greatest(coalesce(p_offset, 0), 0)
+  limit least(greatest(coalesce(p_limit, 201), 1), 201);
+$$;
+
+create or replace function public.get_public_life_path_summary(
+  p_profile_id uuid
+)
+returns table (
+  public_story_count bigint,
+  earliest_year integer,
+  latest_year integer,
+  distinct_place_count bigint,
+  first_time_label text,
+  last_time_label text
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  with visible_entries as (
+    select
+      entry.id,
+      entry.time_label,
+      entry.latitude,
+      entry.longitude,
+      entry.created_at,
+      coalesce(
+        entry.occurred_year,
+        extract(year from entry.occurred_date)::integer,
+        extract(year from entry.occurred_local)::integer,
+        extract(year from entry.occurred_at)::integer
+      ) as event_year,
+      coalesce(entry.occurred_local, entry.occurred_date::timestamp) as local_time
+    from public.map_entries entry
+    where entry.user_id = p_profile_id
+      and entry.visibility = 'public'
+      and (entry.unlock_at is null or entry.unlock_at <= now())
+      and public.can_read_entry(entry.id)
+  )
+  select
+    count(*)::bigint,
+    min(visible.event_year)::integer,
+    max(visible.event_year)::integer,
+    count(distinct (visible.latitude, visible.longitude))::bigint,
+    (
+      select first_entry.time_label
+      from visible_entries first_entry
+      order by
+        (first_entry.event_year is null) asc,
+        first_entry.event_year asc,
+        first_entry.local_time asc nulls last,
+        first_entry.created_at asc,
+        first_entry.id asc
+      limit 1
+    ),
+    (
+      select last_entry.time_label
+      from visible_entries last_entry
+      order by
+        (last_entry.event_year is null) asc,
+        last_entry.event_year desc,
+        last_entry.local_time desc nulls last,
+        last_entry.created_at desc,
+        last_entry.id desc
+      limit 1
+    )
+  from visible_entries visible;
+$$;
+
+-- username is public profile metadata, but direct clients cannot change it.
+-- Existing column-level INSERT/UPDATE grants intentionally remain unchanged.
+revoke all on function public.resolve_public_profile(text) from public;
+revoke all on function public.get_public_life_path_entries(uuid, integer, integer) from public;
+revoke all on function public.get_public_life_path_summary(uuid) from public;
+revoke all on function public.handle_new_user() from public;
+
+grant execute on function public.resolve_public_profile(text)
+  to anon, authenticated;
+grant execute on function public.get_public_life_path_entries(uuid, integer, integer)
+  to anon, authenticated;
+grant execute on function public.get_public_life_path_summary(uuid)
+  to anon, authenticated;
+
+comment on column public.profiles.username is
+  'Stable public profile handle. It is generated by the database and is not directly client-editable.';
+comment on function public.get_public_life_path_entries(uuid, integer, integer) is
+  'Chronological public Life Path entries. Private, group, and future capsule entries are always excluded.';
+comment on function public.get_public_life_path_summary(uuid) is
+  'Public Life Path aggregate. Counts and time bounds use only unlocked public entries.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050003_launch_onboarding.sql
+-- ============================================================
+-- Story-and-Place v1.2: private onboarding preferences.
+-- Preferences are deliberately separated from public.profiles so future
+-- additions do not become publicly readable by default.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regprocedure('public.set_updated_at()') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'launch onboarding requires all existing Story-and-Place migrations';
+  end if;
+end;
+$$;
+
+create table if not exists public.user_experience_preferences (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  onboarding_status text not null default 'pending',
+  interests text[] not null default '{}'::text[],
+  first_story_id uuid references public.map_entries(id) on delete set null,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint user_experience_onboarding_status_values check (
+    onboarding_status in ('pending', 'completed', 'skipped')
+  ),
+  constraint user_experience_interests_values check (
+    cardinality(interests) <= 4
+    and interests <@ array[
+      'life', 'travel', 'literature-city', 'fictional-world'
+    ]::text[]
+  ),
+  constraint user_experience_finished_state check (
+    (onboarding_status = 'pending' and finished_at is null)
+    or (onboarding_status in ('completed', 'skipped') and finished_at is not null)
+  ),
+  constraint user_experience_first_story_state check (
+    first_story_id is null or onboarding_status = 'completed'
+  )
+);
+
+create index if not exists user_experience_status_idx
+  on public.user_experience_preferences(onboarding_status, updated_at desc);
+
+drop trigger if exists user_experience_preferences_set_updated_at
+  on public.user_experience_preferences;
+create trigger user_experience_preferences_set_updated_at
+before update on public.user_experience_preferences
+for each row execute function public.set_updated_at();
+
+create or replace function public.set_onboarding_preferences(
+  p_interests text[] default '{}'::text[],
+  p_action text default 'save'
+)
+returns public.user_experience_preferences
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  cleaned_interests text[];
+  target_status text;
+  result public.user_experience_preferences%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if p_action not in ('save', 'skip') then
+    raise exception using errcode = '22023', message = 'invalid onboarding action';
+  end if;
+
+  select coalesce(array_agg(item order by item), '{}'::text[])
+  into cleaned_interests
+  from (
+    select distinct btrim(raw_item) as item
+    from unnest(coalesce(p_interests, '{}'::text[])) raw_item
+    where btrim(raw_item) in (
+      'life', 'travel', 'literature-city', 'fictional-world'
+    )
+  ) valid_items;
+
+  if cardinality(cleaned_interests) <> cardinality(coalesce(p_interests, '{}'::text[]))
+    or cardinality(cleaned_interests) > 4
+  then
+    raise exception using errcode = '22023', message = 'invalid onboarding interests';
+  end if;
+
+  target_status := case when p_action = 'skip' then 'skipped' else 'pending' end;
+
+  insert into public.user_experience_preferences (
+    user_id, onboarding_status, interests, finished_at
+  ) values (
+    actor,
+    target_status,
+    cleaned_interests,
+    case when target_status = 'skipped' then now() else null end
+  )
+  on conflict (user_id) do update
+  set interests = excluded.interests,
+      onboarding_status = case
+        when public.user_experience_preferences.onboarding_status = 'completed'
+          then 'completed'
+        else excluded.onboarding_status
+      end,
+      finished_at = case
+        when public.user_experience_preferences.onboarding_status = 'completed'
+          then public.user_experience_preferences.finished_at
+        else excluded.finished_at
+      end
+  returning * into result;
+
+  return result;
+end;
+$$;
+
+create or replace function public.complete_onboarding(
+  p_entry_id uuid
+)
+returns public.user_experience_preferences
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  result public.user_experience_preferences%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if not exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and entry.user_id = actor
+  ) then
+    raise exception using errcode = '42501', message = 'owned story required';
+  end if;
+
+  insert into public.user_experience_preferences (
+    user_id, onboarding_status, interests, first_story_id, finished_at
+  ) values (
+    actor, 'completed', '{}'::text[], p_entry_id, now()
+  )
+  on conflict (user_id) do update
+  set onboarding_status = 'completed',
+      first_story_id = coalesce(
+        public.user_experience_preferences.first_story_id,
+        excluded.first_story_id
+      ),
+      finished_at = coalesce(
+        public.user_experience_preferences.finished_at,
+        excluded.finished_at
+      )
+  returning * into result;
+
+  return result;
+end;
+$$;
+
+alter table public.user_experience_preferences enable row level security;
+
+create policy "users_read_own_experience_preferences"
+on public.user_experience_preferences for select to authenticated
+using (user_id = (select auth.uid()));
+
+grant select on public.user_experience_preferences to authenticated;
+
+revoke all on function public.set_onboarding_preferences(text[], text) from public;
+revoke all on function public.complete_onboarding(uuid) from public;
+grant execute on function public.set_onboarding_preferences(text[], text)
+  to authenticated;
+grant execute on function public.complete_onboarding(uuid)
+  to authenticated;
+
+comment on table public.user_experience_preferences is
+  'Private launch-experience preferences. Never expose through public profiles.';
+comment on function public.complete_onboarding(uuid) is
+  'Completes onboarding only when the supplied first story belongs to auth.uid().';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050004_launch_explore.sql
+-- ============================================================
+-- Story-and-Place v1.2: public Explore discovery.
+--
+-- Explore is intentionally a public-only surface. This query never expands
+-- to private/group entries for authenticated users and never includes a
+-- future time capsule, including when its creator is the caller.
+
+do $$
+begin
+  if to_regclass('public.map_entries') is null
+    or to_regclass('public.tags') is null
+    or to_regclass('public.entry_tags') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or to_regprocedure('public.normalize_tag_name(text)') is null
+    or not exists (
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'map_entries'
+        and column_name = 'unlock_at'
+    )
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'public Explore requires all migrations through 202608050003';
+  end if;
+end;
+$$;
+
+create index if not exists map_entries_public_explore_idx
+  on public.map_entries(created_at desc, id desc)
+  where visibility = 'public';
+
+create or replace function public.get_public_explore_entries(
+  p_category text default 'all',
+  p_cursor_created_at timestamptz default null,
+  p_cursor_id uuid default null,
+  p_limit integer default 21
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  where p_category in (
+      'all',
+      'literature',
+      'city-memory',
+      'travel',
+      'science-fiction',
+      'fictional-world'
+    )
+    and entry.visibility = 'public'
+    and (entry.unlock_at is null or entry.unlock_at <= now())
+    and public.can_read_entry(entry.id)
+    and (
+      p_cursor_created_at is null
+      or (
+        p_cursor_id is not null
+        and (
+          entry.created_at < p_cursor_created_at
+          or (
+            entry.created_at = p_cursor_created_at
+            and entry.id < p_cursor_id
+          )
+        )
+      )
+    )
+    and (
+      p_category = 'all'
+      or exists (
+        select 1
+        from public.entry_tags entry_tag
+        join public.tags tag on tag.id = entry_tag.tag_id
+        where entry_tag.entry_id = entry.id
+          and (
+            p_category = 'literature'
+              and tag.normalized_name = any(array[
+                public.normalize_tag_name('文学'),
+                public.normalize_tag_name('文学地图'),
+                public.normalize_tag_name('小说'),
+                public.normalize_tag_name('诗歌'),
+                public.normalize_tag_name('作品')
+              ])
+            or p_category = 'city-memory'
+              and tag.normalized_name = any(array[
+                public.normalize_tag_name('城市记忆'),
+                public.normalize_tag_name('城市'),
+                public.normalize_tag_name('老街'),
+                public.normalize_tag_name('故乡'),
+                public.normalize_tag_name('记忆')
+              ])
+            or p_category = 'travel'
+              and tag.normalized_name = any(array[
+                public.normalize_tag_name('旅行'),
+                public.normalize_tag_name('旅途'),
+                public.normalize_tag_name('游记')
+              ])
+            or p_category = 'science-fiction'
+              and tag.normalized_name = any(array[
+                public.normalize_tag_name('科幻'),
+                public.normalize_tag_name('sci-fi'),
+                public.normalize_tag_name('scifi'),
+                public.normalize_tag_name('science fiction')
+              ])
+            or p_category = 'fictional-world'
+              and tag.normalized_name = any(array[
+                public.normalize_tag_name('虚构世界'),
+                public.normalize_tag_name('世界观'),
+                public.normalize_tag_name('虚构'),
+                public.normalize_tag_name('架空')
+              ])
+          )
+      )
+    )
+  order by entry.created_at desc, entry.id desc
+  limit least(greatest(coalesce(p_limit, 21), 1), 21);
+$$;
+
+revoke all on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) from public;
+grant execute on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) to anon, authenticated;
+
+comment on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) is
+  'Keyset-paginates unlocked public stories for controlled Explore tag lenses; never returns private or group entries.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050005_launch_explore_acl_fix.sql
+-- ============================================================
+-- Fix public Explore invoker execution without exposing the internal tag
+-- normalization helper to browser roles. The controlled vocabulary below is
+-- already stored in normalized form.
+
+do $$
+begin
+  if to_regprocedure(
+    'public.get_public_explore_entries(text,timestamp with time zone,uuid,integer)'
+  ) is null then
+    raise exception using
+      errcode = '55000',
+      message = 'Explore ACL fix requires migration 202608050004';
+  end if;
+end;
+$$;
+
+create or replace function public.get_public_explore_entries(
+  p_category text default 'all',
+  p_cursor_created_at timestamptz default null,
+  p_cursor_id uuid default null,
+  p_limit integer default 21
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  where p_category in (
+      'all',
+      'literature',
+      'city-memory',
+      'travel',
+      'science-fiction',
+      'fictional-world'
+    )
+    and entry.visibility = 'public'
+    and (entry.unlock_at is null or entry.unlock_at <= now())
+    and public.can_read_entry(entry.id)
+    and (
+      p_cursor_created_at is null
+      or (
+        p_cursor_id is not null
+        and (
+          entry.created_at < p_cursor_created_at
+          or (
+            entry.created_at = p_cursor_created_at
+            and entry.id < p_cursor_id
+          )
+        )
+      )
+    )
+    and (
+      p_category = 'all'
+      or exists (
+        select 1
+        from public.entry_tags entry_tag
+        join public.tags tag on tag.id = entry_tag.tag_id
+        where entry_tag.entry_id = entry.id
+          and (
+            p_category = 'literature'
+              and tag.normalized_name = any(array[
+                '文学', '文学地图', '小说', '诗歌', '作品'
+              ])
+            or p_category = 'city-memory'
+              and tag.normalized_name = any(array[
+                '城市记忆', '城市', '老街', '故乡', '记忆'
+              ])
+            or p_category = 'travel'
+              and tag.normalized_name = any(array[
+                '旅行', '旅途', '游记'
+              ])
+            or p_category = 'science-fiction'
+              and tag.normalized_name = any(array[
+                '科幻', 'sci-fi', 'scifi', 'science fiction'
+              ])
+            or p_category = 'fictional-world'
+              and tag.normalized_name = any(array[
+                '虚构世界', '世界观', '虚构', '架空'
+              ])
+          )
+      )
+    )
+  order by entry.created_at desc, entry.id desc
+  limit least(greatest(coalesce(p_limit, 21), 1), 21);
+$$;
+
+revoke all on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) from public;
+grant execute on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) to anon, authenticated;
+
+comment on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) is
+  'Keyset-paginates unlocked public stories without requiring browser roles to execute internal normalization helpers.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608050006_launch_explore_keyword_lenses.sql
+-- ============================================================
+-- Expand Explore lenses to controlled tag-keyword matching so established
+-- compound tags such as "成都科幻" and "文学空间" are discoverable.
+-- Story body text is never scanned and the public/unlocked boundary is kept.
+
+do $$
+begin
+  if to_regprocedure(
+    'public.get_public_explore_entries(text,timestamp with time zone,uuid,integer)'
+  ) is null then
+    raise exception using
+      errcode = '55000',
+      message = 'Explore keyword lenses require migration 202608050005';
+  end if;
+end;
+$$;
+
+create or replace function public.get_public_explore_entries(
+  p_category text default 'all',
+  p_cursor_created_at timestamptz default null,
+  p_cursor_id uuid default null,
+  p_limit integer default 21
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  where p_category in (
+      'all',
+      'literature',
+      'city-memory',
+      'travel',
+      'science-fiction',
+      'fictional-world'
+    )
+    and entry.visibility = 'public'
+    and (entry.unlock_at is null or entry.unlock_at <= now())
+    and public.can_read_entry(entry.id)
+    and (
+      p_cursor_created_at is null
+      or (
+        p_cursor_id is not null
+        and (
+          entry.created_at < p_cursor_created_at
+          or (
+            entry.created_at = p_cursor_created_at
+            and entry.id < p_cursor_id
+          )
+        )
+      )
+    )
+    and (
+      p_category = 'all'
+      or exists (
+        select 1
+        from public.entry_tags entry_tag
+        join public.tags tag on tag.id = entry_tag.tag_id
+        where entry_tag.entry_id = entry.id
+          and (
+            p_category = 'literature'
+              and (
+                tag.normalized_name like '%文学%'
+                or tag.normalized_name = any(array['小说', '诗歌', '作品'])
+              )
+            or p_category = 'city-memory'
+              and (
+                tag.normalized_name like '%城市记忆%'
+                or tag.normalized_name like '%故乡%'
+                or tag.normalized_name = any(array['城市', '老街', '记忆'])
+              )
+            or p_category = 'travel'
+              and (
+                tag.normalized_name like '%旅行%'
+                or tag.normalized_name like '%游记%'
+                or tag.normalized_name = '旅途'
+              )
+            or p_category = 'science-fiction'
+              and (
+                tag.normalized_name like '%科幻%'
+                or tag.normalized_name = any(array[
+                  'sci-fi', 'scifi', 'science fiction'
+                ])
+              )
+            or p_category = 'fictional-world'
+              and (
+                tag.normalized_name like '%虚构%'
+                or tag.normalized_name like '%世界观%'
+                or tag.normalized_name = '架空'
+              )
+          )
+      )
+    )
+  order by entry.created_at desc, entry.id desc
+  limit least(greatest(coalesce(p_limit, 21), 1), 21);
+$$;
+
+revoke all on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) from public;
+grant execute on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) to anon, authenticated;
+
+comment on function public.get_public_explore_entries(
+  text, timestamptz, uuid, integer
+) is
+  'Keyset-paginates unlocked public stories through controlled tag-keyword lenses; never scans private content or story body text.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608070001_launch_featured_entries.sql
+-- ============================================================
+-- v1.2 launch experience: operationally curated public stories.
+-- The browser never receives write privileges for featured_at. Curators use a
+-- trusted backend or the SQL Editor; ordinary authors cannot feature themselves.
+
+do $$
+begin
+  if to_regclass('public.map_entries') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null then
+    raise exception using
+      errcode = '55000',
+      message = 'Featured stories require the existing map entry permission model';
+  end if;
+end;
+$$;
+
+alter table public.map_entries
+  add column if not exists featured_at timestamptz;
+
+create index if not exists map_entries_public_featured_idx
+  on public.map_entries(featured_at desc, created_at desc, id desc)
+  where visibility = 'public' and featured_at is not null;
+
+create or replace function public.maintain_map_entry_featured_state()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  -- A story that is no longer public, or has become a future capsule, must
+  -- leave discovery immediately even if an operator forgets to unfeature it.
+  if new.visibility <> 'public'
+    or (new.unlock_at is not null and new.unlock_at > now()) then
+    new.featured_at := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists map_entries_maintain_featured_state
+on public.map_entries;
+create trigger map_entries_maintain_featured_state
+before insert or update of visibility, unlock_at, featured_at
+on public.map_entries
+for each row execute function public.maintain_map_entry_featured_state();
+
+-- Re-applying this migration to an existing test database also cleans any
+-- accidentally stale state without deleting or rewriting story content.
+update public.map_entries
+set featured_at = null
+where featured_at is not null
+  and (
+    visibility <> 'public'
+    or (unlock_at is not null and unlock_at > now())
+  );
+
+create or replace function public.get_featured_public_entries(
+  p_limit integer default 6
+)
+returns setof public.map_entries
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select entry.*
+  from public.map_entries entry
+  where entry.featured_at is not null
+    and entry.visibility = 'public'
+    and (entry.unlock_at is null or entry.unlock_at <= now())
+    and public.can_read_entry(entry.id)
+  order by entry.featured_at desc, entry.created_at desc, entry.id desc
+  limit least(greatest(coalesce(p_limit, 6), 1), 12);
+$$;
+
+-- Existing column-level grants intentionally exclude the new field. These
+-- explicit revokes make the invariant clear even if an older deployment had
+-- broader table privileges.
+revoke insert (featured_at) on public.map_entries from authenticated;
+revoke update (featured_at) on public.map_entries from authenticated;
+
+revoke all on function public.maintain_map_entry_featured_state()
+from public, anon, authenticated;
+revoke all on function public.get_featured_public_entries(integer)
+from public;
+grant execute on function public.get_featured_public_entries(integer)
+to anon, authenticated;
+
+comment on column public.map_entries.featured_at is
+  'Trusted-operator curation timestamp. Ordinary browser clients have no insert or update privilege for this column.';
+comment on function public.get_featured_public_entries(integer) is
+  'Returns at most 12 curated stories, always restricted to unlocked public entries readable under current RLS.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
 -- AUTH PROFILE BACKFILL
 -- ============================================================
 -- drop schema public cascade 会保留 auth.users，但会重建 profiles。
@@ -4016,12 +6001,14 @@ profiles_to_restore as (
 )
 insert into public.profiles (
   id,
+  username,
   display_name,
   created_at,
   updated_at
 )
 select
   restored.id,
+  'traveler-' || replace(restored.id::text, '-', ''),
   restored.display_name,
   coalesce(restored.created_at, now()),
   now()

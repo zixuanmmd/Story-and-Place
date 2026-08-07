@@ -25,6 +25,7 @@ import {
 import { PlaceCategoryIcon, getCategoryLabel } from "@/lib/categories/registry";
 import type { Group, MapEntryWithProfile } from "@/types/database";
 import type { StoryRouteItemWithEntry } from "@/types/database";
+import { ROUTE_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 import { moveRouteItem, sortRouteItems } from "@/lib/routes/ordering";
 
 const BuilderRouteMap = dynamic(
@@ -216,10 +217,10 @@ function StoryRouteBuilderForScope({ shareSlug }: { shareSlug?: string }) {
             <section className="route-builder-settings">
               <label><span>路线标题 *</span><input maxLength={100} {...form.register("title")} />{form.formState.errors.title ? <small>{form.formState.errors.title.message}</small> : null}</label>
               <label><span>路线说明</span><textarea rows={5} maxLength={2000} {...form.register("description")} />{form.formState.errors.description ? <small>{form.formState.errors.description.message}</small> : null}</label>
-              <fieldset className="visibility-fieldset"><legend>路线可见性</legend>
-                <label><input type="radio" value="private" {...form.register("visibility")} /><span><b>▣</b><strong>仅自己</strong><small>可使用自己的可见记录</small></span></label>
-                <label><input type="radio" value="public" {...form.register("visibility")} /><span><b>●</b><strong>公开</strong><small>节点必须全部是自己的公开记录</small></span></label>
-                <label><input type="radio" value="group" {...form.register("visibility")} /><span><b>◇</b><strong>群组</strong><small>仅当前群组成员可读</small></span></label>
+              <fieldset className="visibility-fieldset"><legend>谁可以看到这条路线？</legend>
+                <label><input type="radio" value="private" {...form.register("visibility")} /><span><b aria-hidden="true">{ROUTE_AUDIENCE_PRESENTATION.private.glyph}</b><strong>{ROUTE_AUDIENCE_PRESENTATION.private.label}</strong><small>{ROUTE_AUDIENCE_PRESENTATION.private.description}</small></span></label>
+                <label><input type="radio" value="group" {...form.register("visibility")} /><span><b aria-hidden="true">{ROUTE_AUDIENCE_PRESENTATION.group.glyph}</b><strong>{ROUTE_AUDIENCE_PRESENTATION.group.label}</strong><small>{ROUTE_AUDIENCE_PRESENTATION.group.description}</small></span></label>
+                <label><input type="radio" value="public" {...form.register("visibility")} /><span><b aria-hidden="true">{ROUTE_AUDIENCE_PRESENTATION.public.glyph}</b><strong>{ROUTE_AUDIENCE_PRESENTATION.public.label}</strong><small>{ROUTE_AUDIENCE_PRESENTATION.public.description}</small></span></label>
               </fieldset>
               {visibility === "group" ? <label><span>所属群组 *</span><select value={groupId ?? ""} onChange={(event) => form.setValue("group_id", event.target.value || null, { shouldValidate: true })}><option value="">请选择群组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select>{form.formState.errors.group_id ? <small>{form.formState.errors.group_id.message}</small> : null}</label> : null}
               <label className="check-row"><input type="checkbox" {...form.register("publish")} />立即发布（至少 2 个节点）</label>
@@ -230,7 +231,7 @@ function StoryRouteBuilderForScope({ shareSlug }: { shareSlug?: string }) {
 
             <section className="route-entry-picker">
               <h2>可选记录</h2>
-              <p>当前有 {choices.length} 条可用于此可见性。群组路线可以使用本群组成员发布的群组记录。</p>
+              <p>当前有 {choices.length} 条符合所选阅读范围。群组路线可以使用本群组成员发布的群组记录。</p>
               <div className="route-choice-list">
                 {choices.map((entry) => <button key={entry.id} type="button" disabled={selectedIds.has(entry.id) || items.fields.length >= 200} onClick={() => add(entry.id)}><PlaceCategoryIcon category={entry.place_category_slug} /><span><strong>{entry.title}</strong><small>{entry.time_label} · {getCategoryLabel(entry.place_category_slug)}</small></span><span>{selectedIds.has(entry.id) ? "已加入" : "加入"}</span></button>)}
               </div>

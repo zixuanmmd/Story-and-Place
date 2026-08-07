@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type {
-  EntryVisibility,
   MapEntry,
   MapEntryInsert,
   PlaceCategorySlug,
@@ -15,6 +14,10 @@ import {
   parseExactLocalDateTime,
   parseLegacyExactTimeLabel,
 } from "@/lib/time/local-date-time";
+import {
+  formatUnlockAtForInput,
+  unlockInputToIso,
+} from "@/lib/time/time-capsule";
 
 export const TIME_PRECISIONS = [
   "exact",
@@ -37,12 +40,6 @@ export const TIME_PRECISION_LABELS: Record<TimePrecision, string> = {
   approximate: "大致时间",
 };
 
-export const VISIBILITY_LABELS: Record<EntryVisibility, string> = {
-  public: "公开",
-  private: "私密",
-  group: "群组",
-};
-
 export const entryFormSchema = z
   .object({
     title: z.string().trim().min(1, "请输入标题。").max(100, "标题不能超过 100 个字符。"),
@@ -63,12 +60,13 @@ export const entryFormSchema = z
     time_precision: z.enum(TIME_PRECISIONS, { error: "请选择有效的时间精度。" }),
     time_value: z.string().trim().min(1, "请填写事件发生时间。"),
     occurred_timezone: z.string().trim().max(100, "时区名称不能超过 100 个字符。"),
-    visibility: z.enum(VISIBILITIES, { error: "请选择有效的可见性。" }),
+    visibility: z.enum(VISIBILITIES, { error: "请选择谁可以看到这条故事。" }),
     group_id: z.string(),
     place_category_slug: z.enum(PLACE_CATEGORY_SLUGS, {
       error: "请选择有效的地点分类。",
     }),
     allow_comments: z.boolean(),
+    unlock_at: z.string().trim(),
   })
   .superRefine((values, context) => {
     const invalid = (message: string) =>
@@ -130,6 +128,13 @@ export const entryFormSchema = z
         message: "只有群组记录可以关联群组。",
       });
     }
+    if (values.unlock_at && !unlockInputToIso(values.unlock_at)) {
+      context.addIssue({
+        code: "custom",
+        path: ["unlock_at"],
+        message: "请输入有效的胶囊解锁时间。",
+      });
+    }
   });
 
 export type EntryFormValues = z.infer<typeof entryFormSchema>;
@@ -151,6 +156,7 @@ type EntryPayload = Pick<
   | "group_id"
   | "place_category_slug"
   | "allow_comments"
+  | "unlock_at"
 >;
 
 export function entryValuesToPayload(
@@ -166,6 +172,7 @@ export function entryValuesToPayload(
     group_id: values.visibility === "group" ? values.group_id : null,
     place_category_slug: values.place_category_slug,
     allow_comments: values.allow_comments,
+    unlock_at: values.unlock_at ? unlockInputToIso(values.unlock_at) : null,
     time_precision: values.time_precision,
     occurred_local: null,
     occurred_timezone: null,
@@ -248,5 +255,6 @@ export function entryToFormValues(entry: MapEntry): EntryFormValues {
     group_id: entry.group_id ?? "",
     place_category_slug: entry.place_category_slug,
     allow_comments: entry.allow_comments,
+    unlock_at: formatUnlockAtForInput(entry.unlock_at),
   };
 }

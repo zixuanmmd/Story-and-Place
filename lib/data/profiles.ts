@@ -1,5 +1,5 @@
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { MapEntryWithProfile } from "@/types/database";
+import type { Profile } from "@/types/database";
 import type { ProfileFormValues } from "@/lib/validation/profile";
 import { normalizeDisplayNameForStorage } from "@/lib/profile/display-name";
 
@@ -31,26 +31,11 @@ export async function saveProfile(id: string, values: ProfileFormValues) {
   return data;
 }
 
-export async function getPublicProfile(id: string) {
+export async function getPublicProfile(identifier: string) {
   const supabase = getSupabaseBrowserClient();
-  const { data, error } = await supabase.from("profiles").select("*").eq("id", id).maybeSingle();
+  const { data, error } = await supabase.rpc("resolve_public_profile", {
+    p_identifier: identifier,
+  });
   if (error) throw error;
-  return data;
-}
-
-export async function listPublicProfileEntries(id: string, limit = 20) {
-  const supabase = getSupabaseBrowserClient();
-  const { data, error, count } = await supabase
-    .from("map_entries")
-    .select("*, profiles!map_entries_user_id_fkey(display_name, avatar_url)", { count: "exact" })
-    .eq("user_id", id)
-    .eq("visibility", "public")
-    .order("created_at", { ascending: false })
-    .limit(limit + 1);
-  if (error) throw error;
-  return {
-    entries: data.slice(0, limit) as MapEntryWithProfile[],
-    hasMore: data.length > limit,
-    count: count ?? data.length,
-  };
+  return (data[0] ?? null) as Profile | null;
 }

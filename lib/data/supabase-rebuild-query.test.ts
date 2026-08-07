@@ -20,6 +20,15 @@ const migrationNames = [
   "202607260001_entry_participants_tags.sql",
   "202607300001_entry_rpc_group_membership.sql",
   "202607300002_entry_rls_helper_execute.sql",
+  "202608040001_v11_schema_foundation.sql",
+  "202608040002_emotion_tags.sql",
+  "202608050001_time_capsules.sql",
+  "202608050002_life_paths.sql",
+  "202608050003_launch_onboarding.sql",
+  "202608050004_launch_explore.sql",
+  "202608050005_launch_explore_acl_fix.sql",
+  "202608050006_launch_explore_keyword_lenses.sql",
+  "202608070001_launch_featured_entries.sql",
 ];
 
 describe("Supabase 完整重建 Query", () => {

@@ -15,6 +15,7 @@ import { ProtectedState } from "@/components/layout/protected-state";
 import { useAuth } from "@/components/providers/auth-provider";
 import { PLACE_CATEGORIES, PlaceCategoryIcon, getCategoryLabel } from "@/lib/categories/registry";
 import { getGroupBySlug, getMyGroupRole } from "@/lib/data/groups";
+import { getPublicProfile } from "@/lib/data/profiles";
 import { listTimelineEntries, TIMELINE_PAGE_SIZE, type TimelineScope } from "@/lib/data/timeline";
 import { getFriendlyError } from "@/lib/errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -27,6 +28,9 @@ import {
 } from "@/lib/timeline/timeline";
 import type { MapEntryWithProfile, PlaceCategorySlug } from "@/types/database";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { ENTRY_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
+import { formatUnlockAt, getTimeCapsuleState } from "@/lib/time/time-capsule";
+import { GuidedEmptyState } from "@/components/ui/guided-empty-state";
 
 const TimelineMap = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -87,8 +91,15 @@ function TimelineForScope(props: TimelineViewProps) {
           return;
         }
         if (mode === "user" && targetUserId) {
-          setScope({ kind: "user", userId: targetUserId });
-          setScopeTitle("公开故事时间线");
+          const targetProfile = await getPublicProfile(targetUserId);
+          if (!active) return;
+          if (!targetProfile) {
+            setStatus("这个用户不存在，或公开资料暂时不可用。");
+            setScope(null);
+            return;
+          }
+          setScope({ kind: "user", userId: targetProfile.id });
+          setScopeTitle(`${targetProfile.display_name} · 公开故事时间线`);
           return;
         }
         if (!groupSlug) return;
@@ -230,6 +241,7 @@ function TimelineForScope(props: TimelineViewProps) {
     if (next.endYear !== null) params.set("end", String(next.endYear));
     if (!next.includeUndated) params.set("undated", "0");
     if (next.order !== "desc") params.set("order", next.order);
+    if (next.capsuleState !== "all") params.set("capsule", next.capsuleState);
     router.replace(`?${params.toString()}`, { scroll: false });
   };
 
@@ -271,10 +283,11 @@ function TimelineForScope(props: TimelineViewProps) {
           <>
             <section className="timeline-filters" aria-label="时间线筛选">
               <label>关键词<input value={filters.keyword} maxLength={100} onChange={(event) => updateFilters({ ...filters, keyword: event.target.value })} /></label>
-              <label>可见性<select value={filters.visibility} onChange={(event) => updateFilters({ ...filters, visibility: event.target.value as TimelineFilters["visibility"] })}><option value="all">全部</option><option value="public">公开</option>{props.mode === "mine" ? <option value="private">私密</option> : null}<option value="group">群组</option></select></label>
+              <label>谁可以看到<select value={filters.visibility} onChange={(event) => updateFilters({ ...filters, visibility: event.target.value as TimelineFilters["visibility"] })}><option value="all">全部阅读范围</option><option value="public">所有人可见</option>{props.mode === "mine" ? <option value="private">我和受邀者可见</option> : null}<option value="group">群组成员可见</option></select></label>
               <label>开始年份<input inputMode="numeric" value={filters.startYear ?? ""} onChange={(event) => updateFilters({ ...filters, startYear: event.target.value ? Number(event.target.value) : null })} /></label>
               <label>结束年份<input inputMode="numeric" value={filters.endYear ?? ""} onChange={(event) => updateFilters({ ...filters, endYear: event.target.value ? Number(event.target.value) : null })} /></label>
               <label>顺序<select value={filters.order} onChange={(event) => updateFilters({ ...filters, order: event.target.value as TimelineFilters["order"] })}><option value="desc">从近到远</option><option value="asc">从远到近</option></select></label>
+              <label>时间胶囊<select value={filters.capsuleState} onChange={(event) => updateFilters({ ...filters, capsuleState: event.target.value as TimelineFilters["capsuleState"] })}><option value="all">全部</option><option value="past">已发生（已解锁）</option><option value="current">当前（普通故事）</option>{props.mode === "mine" ? <option value="future">未来（待解锁）</option> : null}</select></label>
               {props.mode === "group" ? <label>作者<select value={filters.authorId} onChange={(event) => updateFilters({ ...filters, authorId: event.target.value })}><option value="">全部作者</option>{authorOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label> : null}
               <label className="check-row"><input type="checkbox" checked={filters.includeUndated} onChange={(event) => updateFilters({ ...filters, includeUndated: event.target.checked })} />显示时间未定</label>
               <div className="timeline-category-filter" aria-label="地点分类">
@@ -325,10 +338,11 @@ function TimelineForScope(props: TimelineViewProps) {
                               <small>{entry.time_label} · {getCategoryLabel(entry.place_category_slug)}</small>
                               <strong>{entry.title}</strong>
                               <span>{entry.place_name || "未命名地点"} · {entry.profiles?.display_name ?? "未知作者"}</span>
+                              {entry.unlock_at ? <span className={`capsule-inline capsule-inline--${getTimeCapsuleState(entry.unlock_at)}`}>{getTimeCapsuleState(entry.unlock_at) === "future" ? `⌛ ${formatUnlockAt(entry.unlock_at)} 解锁` : "⌛ 已解锁胶囊"}</span> : null}
                             </span>
                           </button>
                           <footer>
-                            <span className={`visibility-badge visibility-badge--${entry.visibility}`}>{entry.visibility === "public" ? "公开" : entry.visibility === "private" ? "仅自己" : "群组"}</span>
+                            <span className={`visibility-badge visibility-badge--${entry.visibility}`}>{ENTRY_AUDIENCE_PRESENTATION[entry.visibility].shortLabel}</span>
                             <Link href={`/?entry=${entry.id}`}>打开详情</Link>
                             {props.mode === "mine" ? <label className="check-row"><input type="checkbox" checked={routeSelection.includes(entry.id)} onChange={(event) => setRouteSelection((current) => event.target.checked ? [...current, entry.id].slice(0, 200) : current.filter((id) => id !== entry.id))} />加入路线</label> : null}
                           </footer>
@@ -337,7 +351,7 @@ function TimelineForScope(props: TimelineViewProps) {
                     </div>
                   </section>
                 ))}
-                {!visibleEntries.length && !loading && !status ? <div className="small-empty">没有符合当前筛选的故事。</div> : null}
+                {!visibleEntries.length && !loading && !status ? entries.length ? <div className="small-empty">当前筛选没有找到故事，换一个时间、分类或关键词试试。</div> : props.mode === "mine" ? <GuidedEmptyState eyebrow="YOUR FIRST YEAR" title="时间会留下痕迹。" description="添加第一个地点和年份，它会成为时间线的起点。" compact><Link className="primary-button nav-link" href="/?onboarding=1">添加第一个故事</Link></GuidedEmptyState> : props.mode === "group" ? <GuidedEmptyState title="这条群组时间线还在等待第一个地点。" description="群组成员发布的故事会按照发生时间出现在这里。" compact><Link className="quiet-button nav-link" href={`/?group=${scope?.kind === "group" ? scope.groupId : ""}`}>发布群组故事</Link></GuidedEmptyState> : <GuidedEmptyState title="这个人的公开时间线还没有故事。" description="公开地点出现后，会沿着时间在这里展开。" compact /> : null}
                 {loading ? <div className="content-state" role="status">正在沿时间读取故事…</div> : null}
                 {hasMore ? <button className="secondary-button" disabled={loading} type="button" onClick={() => void load(page + 1, true)}>加载更多（每页 {TIMELINE_PAGE_SIZE} 条）</button> : null}
               </section>

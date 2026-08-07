@@ -12,6 +12,8 @@ import type { FeedEntry } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { formatUnlockAt, getTimeCapsuleState } from "@/lib/time/time-capsule";
+import { ENTRY_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 
 function FeedLike({
   entry,
@@ -120,16 +122,20 @@ function FeedForScope() {
           <>
             {status ? <div className="inline-error" role="alert">{status}</div> : null}
             <div className="feed-list">
-              {entries.map((entry) => (
+              {entries.map((entry) => {
+                const capsuleState = getTimeCapsuleState(entry.unlock_at);
+                return (
                 <article className="feed-card" key={entry.id}>
                   <header><Link href={`/users/${entry.user_id}`}><strong>{entry.author_display_name}</strong></Link><time>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(entry.created_at))}</time></header>
-                  <div className="feed-meta"><PlaceCategoryIcon category={entry.place_category_slug} /><span>{getCategoryLabel(entry.place_category_slug)}</span><span className={`visibility-badge visibility-badge--${entry.visibility}`}>{entry.visibility === "public" ? "公开" : entry.visibility === "private" ? "仅自己" : "群组"}</span>{entry.group_slug ? <Link href={`/groups/${entry.group_slug}`}>{entry.group_name}</Link> : null}</div>
+                  <div className="feed-meta"><PlaceCategoryIcon category={entry.place_category_slug} /><span>{getCategoryLabel(entry.place_category_slug)}</span><span className={`visibility-badge visibility-badge--${entry.visibility}`}>{ENTRY_AUDIENCE_PRESENTATION[entry.visibility].shortLabel}</span>{entry.group_slug ? <Link href={`/groups/${entry.group_slug}`}>{entry.group_name}</Link> : null}</div>
+                  {entry.unlock_at ? <p className={`capsule-inline capsule-inline--${capsuleState}`}>{capsuleState === "future" ? `⌛ 将于 ${formatUnlockAt(entry.unlock_at)} 解锁` : "⌛ 已解锁时间胶囊"}</p> : null}
                   <h2>{entry.title}</h2>
                   <p className="feed-place">{entry.time_label}{entry.place_name ? ` · ${entry.place_name}` : ""}</p>
                   <p className="feed-excerpt">{entry.content}</p>
-                  <footer>{entry.visibility === "private" ? <span>仅自己可见，不开放互动</span> : <FeedLike entry={entry} userId={user.id} onError={setStatus} />}<span>评论 · {Number(entry.comment_count)}</span><Link href={`/?entry=${entry.id}`}>地图定位与详情</Link></footer>
+                  <footer>{capsuleState === "future" ? <span>解锁前不开放互动</span> : entry.visibility === "private" ? <span>仅你和受邀者可见，不开放互动</span> : <FeedLike entry={entry} userId={user.id} onError={setStatus} />}{capsuleState !== "future" ? <span>评论 · {Number(entry.comment_count)}</span> : null}<Link href={`/?entry=${entry.id}`}>地图定位与详情</Link></footer>
                 </article>
-              ))}
+                );
+              })}
             </div>
             {!entries.length && !loading && !status ? <div className="content-state"><h2>信息流还是空的</h2><p>关注其他用户、加入群组，或先写下一条记录。</p><div className="record-actions"><Link href="/groups">发现群组</Link><Link href="/">前往地图</Link></div></div> : null}
             {loading ? <div className="content-state" role="status">正在读取故事…</div> : null}

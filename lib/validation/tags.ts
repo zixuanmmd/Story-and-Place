@@ -1,8 +1,47 @@
 import { z } from "zod";
-import type { MapEntryWithProfile } from "@/types/database";
+import type { MapEntryWithProfile, Tag, TagType } from "@/types/database";
 
 export const MAX_ENTRY_TAGS = 10;
 export const MAX_TAG_LENGTH = 40;
+
+export const tagTypeSchema = z.enum([
+  "normal",
+  "emotion",
+  "theme",
+  "character",
+  "event",
+]);
+
+export const emotionSemanticKeySchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(48)
+  .regex(/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/, "情绪标识格式无效。");
+
+export const TAG_TYPE_OPTIONS: ReadonlyArray<{
+  value: TagType;
+  label: string;
+}> = [
+  { value: "normal", label: "普通" },
+  { value: "emotion", label: "情绪" },
+  { value: "theme", label: "主题" },
+  { value: "character", label: "人物" },
+  { value: "event", label: "事件" },
+];
+
+export function getTagTypeLabel(type: TagType) {
+  return TAG_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? "普通";
+}
+
+export function getTagHref(
+  tag: Pick<Tag, "slug" | "type" | "semantic_key">,
+) {
+  return tag.type === "emotion" && tag.semantic_key
+    ? `/emotions/${tag.semantic_key}`
+    : `/tags/${tag.slug}`;
+}
 
 export const tagInputSchema = z
   .string()
@@ -10,7 +49,7 @@ export const tagInputSchema = z
   .transform((value, context) => {
     const names = value
       .split(/[,，\n]+/)
-      .map((name) => name.trim().replace(/\s+/g, " "))
+      .map((name) => name.trim().replace(/^#+/, "").trim().replace(/\s+/g, " "))
       .filter(Boolean);
     const unique = new Map<string, string>();
     for (const name of names) {

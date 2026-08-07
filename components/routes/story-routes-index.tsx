@@ -8,6 +8,8 @@ import { useAuth } from "@/components/providers/auth-provider";
 import { archiveStoryRoute, listMyStoryRoutes, STORY_ROUTE_PAGE_SIZE } from "@/lib/data/story-routes";
 import { getFriendlyError } from "@/lib/errors";
 import type { StoryRouteWithRelations } from "@/types/database";
+import { GuidedEmptyState } from "@/components/ui/guided-empty-state";
+import { ROUTE_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 
 export function StoryRoutesIndex() {
   const { user } = useAuth();
@@ -69,16 +71,16 @@ function StoryRoutesForScope() {
             <div className="route-card-grid">
               {routes.map((route) => (
                 <article key={route.id} className="route-card">
-                  <header><span className={`visibility-badge visibility-badge--${route.visibility}`}>{route.visibility === "public" ? "公开路线" : route.visibility === "group" ? "群组路线" : "私密路线"}</span>{route.published_at ? <span>已发布</span> : <span>草稿</span>}</header>
+                  <header><span className={`visibility-badge visibility-badge--${route.visibility}`}>{ROUTE_AUDIENCE_PRESENTATION[route.visibility].shortLabel}</span>{route.published_at ? <span>已发布</span> : <span>草稿</span>}</header>
                   <h2><Link href={`/routes/${route.share_slug}`}>{route.title}</Link></h2>
                   <p>{route.description || "还没有路线说明。"}</p>
                   <small>{route.node_count} 个节点{route.groups ? ` · ${route.groups.name}` : ""}{route.archived_at ? " · 已归档" : ""}</small>
-                  {route.privacy_downgraded_at ? <div className="inline-notice">因节点权限变化，已自动转为私密。</div> : null}
+                  {route.privacy_downgraded_at ? <div className="inline-notice">因节点阅读范围发生变化，这条路线已自动收回为只有你可见。</div> : null}
                   <footer><Link href={`/routes/${route.share_slug}`}>查看</Link>{!route.archived_at ? <Link href={`/routes/${route.share_slug}/edit`}>编辑</Link> : null}{!route.archived_at ? <button type="button" onClick={() => void archive(route.id)}>归档</button> : null}</footer>
                 </article>
               ))}
             </div>
-            {!routes.length && !loading ? <div className="content-state"><h2>还没有故事路线</h2><p>先从自己的记录或群组时间线中选择地点，再决定叙事顺序。</p><Link className="primary-button nav-link" href="/routes/new">创建第一条路线</Link></div> : null}
+            {!routes.length && !loading ? <GuidedEmptyState eyebrow="CONNECT THE PLACES" title="把几个地点连接起来，它们会成为一个故事。" description="先选择两段已有记忆，再决定它们之间的叙事顺序。"><Link className="primary-button nav-link" href="/routes/new">创建第一条路线</Link><Link className="quiet-button nav-link" href="/timeline">从时间线选择</Link></GuidedEmptyState> : null}
             {loading ? <div className="content-state" role="status">正在读取路线…</div> : null}
             {hasMore ? <button className="secondary-button" disabled={loading} type="button" onClick={() => void load(page + 1, true)}>加载更多（每页 {STORY_ROUTE_PAGE_SIZE} 条）</button> : null}
           </>

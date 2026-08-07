@@ -9,7 +9,7 @@ type ProtectedStateProps = {
 
 export function ProtectedState({
   kind,
-  signedOutDescription = "登录后可以管理自己的公开和私密记录。",
+  signedOutDescription = "登录后可以管理所有阅读范围下的个人故事。",
   nextPath,
 }: ProtectedStateProps) {
   if (kind === "loading") {

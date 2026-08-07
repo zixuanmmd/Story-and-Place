@@ -58,6 +58,24 @@ export async function listGroupStoryRoutes(groupId: string, page = 0) {
   };
 }
 
+export async function listPublicStoryRoutesByCreator(
+  creatorId: string,
+  limit = 3,
+) {
+  const { data, error } = await getSupabaseBrowserClient()
+    .from("story_routes")
+    .select(ROUTE_SELECT)
+    .eq("created_by", creatorId)
+    .eq("visibility", "public")
+    .is("archived_at", null)
+    .not("published_at", "is", null)
+    .order("published_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 6));
+  if (error) throw error;
+  return data as unknown as StoryRouteWithRelations[];
+}
+
 export async function getStoryRouteBySlug(shareSlug: string) {
   const supabase = getSupabaseBrowserClient();
   const { data, error } = await supabase

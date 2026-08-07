@@ -17,11 +17,11 @@ type FilterPanelProps = {
 };
 
 const FILTER_OPTIONS: Array<{ value: HomeVisibilityFilter; label: string; loginOnly?: boolean }> = [
-  { value: "all", label: "全部可见记录" },
-  { value: "public", label: "仅公开记录" },
-  { value: "group", label: "仅群组记录", loginOnly: true },
-  { value: "mine", label: "仅我的记录", loginOnly: true },
-  { value: "my-private", label: "仅我的私密", loginOnly: true },
+  { value: "all", label: "我能看到的全部故事" },
+  { value: "public", label: "所有人可见" },
+  { value: "group", label: "群组成员可见", loginOnly: true },
+  { value: "mine", label: "我创建的故事", loginOnly: true },
+  { value: "my-private", label: "我和受邀者可见", loginOnly: true },
 ];
 
 export function FilterPanel({
@@ -57,7 +57,7 @@ export function FilterPanel({
 
       <div className="filter-controls">
         <label>
-          <span>显示范围</span>
+          <span>谁可以看到</span>
           <select
             className="form-control"
             value={filters.visibility}

@@ -69,6 +69,8 @@ export function AppHeader() {
         onClick={() => setMenuOpen(false)}
       >
         {error ? <span className="header-error" role="alert">{error}</span> : null}
+        <Link className="quiet-button nav-link" href="/explore">探索</Link>
+        <Link className="quiet-button nav-link" href="/tags">标签</Link>
         <Link className="quiet-button nav-link" href="/groups">群组</Link>
         {user ? (
           <>

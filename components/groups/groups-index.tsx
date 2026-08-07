@@ -13,6 +13,7 @@ import {
 } from "@/lib/groups/load-error";
 import type { Group, GroupInvitation, GroupMember } from "@/types/database";
 import { mergeUniqueById } from "@/lib/data/keyset-pagination";
+import { GROUP_DISCOVERY_PRESENTATION } from "@/lib/privacy/presentation";
 
 function GroupCard({ group, role, onJoin }: { group: Group; role?: string; onJoin?: () => void }) {
   return (
@@ -25,7 +26,7 @@ function GroupCard({ group, role, onJoin }: { group: Group; role?: string; onJoi
       <div>
         <div className="record-card-topline">
           <span className={`visibility-badge visibility-badge--${group.visibility}`}>
-            {group.visibility === "public" ? "公开群组" : "私密群组"}
+            {GROUP_DISCOVERY_PRESENTATION[group.visibility].shortLabel}
           </span>
           {role ? <span>{role === "owner" ? "群主" : role === "admin" ? "管理员" : "成员"}</span> : null}
         </div>
@@ -150,7 +151,7 @@ function GroupsIndexForScope() {
         ) : (
           <>
             {user ? <section className="content-section"><h2>我加入的群组</h2><div className="group-grid">{joined.length ? joined.map((group) => <GroupCard key={group.id} group={group} role={membershipMap.get(group.id)?.role} />) : <div className="small-empty">你还没有加入群组。</div>}</div></section> : null}
-            <section className="content-section"><h2>可加入的公开群组</h2><div className="group-grid">{discover.length ? discover.map((group) => <GroupCard key={group.id} group={group} onJoin={() => void join(group)} />) : <div className="small-empty">暂时没有可加入的公开群组。</div>}</div></section>
+            <section className="content-section"><h2>可以直接加入的群组</h2><div className="group-grid">{discover.length ? discover.map((group) => <GroupCard key={group.id} group={group} onJoin={() => void join(group)} />) : <div className="small-empty">暂时没有可以直接加入的群组。</div>}</div></section>
             {hasMore ? <button className="secondary-button feed-more" disabled={loading} type="button" onClick={() => void loadMore()}>{loading ? "加载中…" : "加载更多群组"}</button> : null}
           </>
         )}

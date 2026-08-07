@@ -15,6 +15,7 @@ const values: EntryFormValues = {
   group_id: "5b35cb8a-b1c3-4a63-8125-465d4c8f6efe",
   place_category_slug: "other",
   allow_comments: false,
+  unlock_at: "2035-01-01T09:30",
 };
 
 describe("getEntryUpdatePatch", () => {

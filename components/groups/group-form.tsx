@@ -3,6 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { groupFormSchema, type GroupFormValues } from "@/lib/validation/groups";
+import { GROUP_DISCOVERY_PRESENTATION } from "@/lib/privacy/presentation";
 
 export function GroupForm({
   initialValues,
@@ -49,14 +50,14 @@ export function GroupForm({
         {form.formState.errors.avatar_url ? <small>{form.formState.errors.avatar_url.message}</small> : null}
       </label>
       <fieldset className="visibility-fieldset">
-        <legend>群组类型 *</legend>
+        <legend>谁可以发现并加入？ *</legend>
         <label>
           <input disabled={!canEditIdentity} type="radio" value="public" {...form.register("visibility")} />
-          <span><b aria-hidden="true">◉</b><strong>公开群组</strong><small>所有人可查看简介，登录用户可直接加入</small></span>
+          <span><b aria-hidden="true">{GROUP_DISCOVERY_PRESENTATION.public.glyph}</b><strong>{GROUP_DISCOVERY_PRESENTATION.public.label}</strong><small>{GROUP_DISCOVERY_PRESENTATION.public.description}</small></span>
         </label>
         <label>
           <input disabled={!canEditIdentity} type="radio" value="private" {...form.register("visibility")} />
-          <span><b aria-hidden="true">▣</b><strong>私密群组</strong><small>只有受邀并接受的成员可进入</small></span>
+          <span><b aria-hidden="true">{GROUP_DISCOVERY_PRESENTATION.private.glyph}</b><strong>{GROUP_DISCOVERY_PRESENTATION.private.label}</strong><small>{GROUP_DISCOVERY_PRESENTATION.private.description}</small></span>
         </label>
       </fieldset>
       <button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>

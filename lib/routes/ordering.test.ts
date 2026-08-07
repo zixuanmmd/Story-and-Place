@@ -32,6 +32,8 @@ function entry(id: string, year: number, createdAt: string): MapEntryWithProfile
     group_id: null,
     place_category_slug: "other",
     allow_comments: true,
+    unlock_at: null,
+    featured_at: null,
     created_at: createdAt,
     updated_at: createdAt,
     profiles: null,

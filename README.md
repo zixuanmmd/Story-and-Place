@@ -41,6 +41,16 @@ npm start
    - `supabase/migrations/202607250003_group_creator_select_policy.sql`
    - `supabase/migrations/202607260001_entry_participants_tags.sql`
    - `supabase/migrations/202607300001_entry_rpc_group_membership.sql`
+   - `supabase/migrations/202607300002_entry_rls_helper_execute.sql`
+   - `supabase/migrations/202608040001_v11_schema_foundation.sql`
+   - `supabase/migrations/202608040002_emotion_tags.sql`
+   - `supabase/migrations/202608050001_time_capsules.sql`
+   - `supabase/migrations/202608050002_life_paths.sql`
+   - `supabase/migrations/202608050003_launch_onboarding.sql`
+   - `supabase/migrations/202608050004_launch_explore.sql`
+   - `supabase/migrations/202608050005_launch_explore_acl_fix.sql`
+   - `supabase/migrations/202608050006_launch_explore_keyword_lenses.sql`
+   - `supabase/migrations/202608070001_launch_featured_entries.sql`
 3. 在开发期按需配置邮箱确认和 `http://localhost:3000` 回调地址。
 4. 从项目 API 设置复制 Project URL 与 anon/publishable key。
 
@@ -51,7 +61,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 ```
 
-第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。第九份 migration 在 `create_entry` 与 `update_entry` 的 security-definer 边界内再次校验目标群组未归档且调用者仍是有效成员。旧记录不会被删除或重写，其地点分类安全回填为 `other`。
+第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。第九、十份 migration 加固记录 RPC 的群组资格与辅助函数执行权限。第十一份 migration 增加 v1.1 的标签类型、时间胶囊解锁时间和路线节点关系字段，但不提前开放写权限。第十二份 migration 激活类型化标签聚合和公共情绪故事，并安全提升七个预设情绪标签。第十三份 migration 激活时间胶囊的 owner-only 锁定、受控写入、时间线筛选、信息流保护和路线隐私降级。第十四份 migration 为公开资料增加稳定用户名，并提供只基于“已解锁公开故事”的人生轨迹与聚合查询。第十五份 migration 新增仅本人可读的首次使用偏好、跳过状态与完成 RPC，不把兴趣写入公开 profiles。第十六份 migration 新增公开探索的复合游标查询，只返回已解锁的 `public` 故事，并在数据库分页前按受控标签词表分类；第十七份 migration 修复匿名 Explore 不应依赖内部标签规范化函数的 ACL 问题；第十八份 migration 让受控主题分类识别 `#成都科幻`、`#文学空间` 等复合标签，但仍不扫描正文；第十九份 migration 新增由可信运营端维护的故事精选时间，并提供只返回已解锁公开故事的精选 RPC。旧记录不会被删除；旧标签和路线节点分别保持 `normal`，旧记录的 `unlock_at` 与 `featured_at` 保持空值。
 
 ## 新增页面
 
@@ -60,13 +70,21 @@ supabase db push
 - `/groups/[slug]/members`、`/groups/[slug]/settings`：成员角色与群组资料管理。
 - `/groups/invitations`：接受或拒绝邀请。
 - `/feed`：按创建时间倒序的权限安全信息流，每页 20 条。
-- `/users/[id]`：用户公开主页、关注状态与公开记录。
+- `/explore`：匿名可访问的公开故事发现页，按文学、城市记忆、旅行、科幻和虚构世界筛选；私密、群组和未来胶囊不会进入结果。
+- `/users/[username]`：用户公开主页、分页公开故事、人生轨迹、关注状态与代表性公开线路；原 UUID 地址继续兼容。公开故事列表、统计和轨迹始终排除私密、群组故事与尚未解锁的时间胶囊。
 - `/timeline`：当前用户的个人故事时间线，每页 50 条。
-- `/users/[id]/timeline`、`/groups/[slug]/timeline`：公开用户时间线与成员专属群组时间线。
+- `/users/[username]/timeline`、`/groups/[slug]/timeline`：公开用户时间线与成员专属群组时间线；用户时间线仍兼容 UUID 地址。
 - `/routes`、`/routes/new`：路线列表和路线编辑器。
 - `/routes/[shareSlug]`、`/routes/[shareSlug]/edit`：权限安全的路线分享与编辑。
 - `/entry-invitations`：接受或拒绝共同经历邀请。
+- `/tags`：按照普通、情绪、主题、人物和事件类型浏览当前有权读取的标签。
 - `/tags/[slug]`：只聚合当前访问者有权读取的标签记录。
+- `/emotions/[emotion]`：按稳定情绪标识浏览公开故事，不返回私密或群组记录。
+- `/onboarding`：首次登录欢迎与可跳过的兴趣选择。
+
+权限选择界面使用面向用户的阅读范围描述，而不是数据库枚举：地点故事区分“我和受邀共同经历者”“所属群组成员”“所有人”；故事路线区分“只有我”“所属群组成员”“所有人”；群组创建则说明“任何人都能发现”或“仅受邀的人”。这些文案不会改变底层 `private`、`group`、`public` 值与既有 RLS，数据库仍是最终权限边界。
+- `/onboarding/complete`：第一个故事完成反馈和下一步入口。
+- 创建地点时可选“人生记忆、旅行记录、文学地图、虚构世界”四种前端故事模板；模板只提供写作线索、建议分类、时间精度与普通标签，不会改写已经填写的内容，也不会新增数据库字段。
 
 ## 环境变量
 
@@ -213,6 +231,36 @@ supabase gen types typescript --local > types/database.generated.ts
 - 地图标记与时间线卡片双向选中；筛选参数经过白名单和 Zod 校验。
 - 退出登录由认证作用域 `key` 立即卸载全部状态；成员退出/被移除时 Realtime 会立即清除对应群组节点。
 
+## 情绪标签
+
+现有自由标签继续保持 `normal` 类型。v1.1 额外支持 `emotion`、`theme`、`character` 和 `event`，并预置“孤独、重逢、成长、遗憾、失去、希望、恐惧”七个情绪标签。用户仍通过原有记录表单添加标签；输入开头的 `#` 只用于显示，不会重复保存到标签名称中。
+
+`/tags` 的数量只统计当前访问者有权读取的记录。`/emotions/[emotion]` 使用独立 RPC，并在数据库查询中强制 `visibility = 'public'`；即使登录用户拥有私密记录或群组记录，这些内容也不会进入公共情绪页面或计数。预设情绪使用稳定的 ASCII `semantic_key` 作为地址，原标签 UUID、随机 slug 和已有记录关系保持不变。
+
+## 时间胶囊
+
+记录可选填写 `unlock_at` 作为绝对解锁时刻。解锁前，公开或私密胶囊只有创建者可以读取；群组胶囊还要求创建者保持有效群组成员身份。accepted 共同经历者、关注者、普通群组成员、匿名访问者、标签聚合、点赞评论和 security-definer 信息流都不能绕过锁定。到达解锁时刻后无需后台任务，下一次数据库查询会自动恢复记录原本的 `public`、`private` 或 `group` 可见性。
+
+解锁时间只能由创建者通过 `create_entry_v11`、`update_entry_v11` 受控 RPC 写入；普通客户端没有 `unlock_at` 列权限。新的解锁时间必须晚于当前时刻，已经解锁的旧胶囊可以继续编辑其他内容或清除胶囊状态。时间线提供“已发生（已解锁）／当前（普通故事）／未来（待解锁）”筛选。
+
+未解锁节点只能进入创建者自己的私密故事路线。记录被重新设为未来胶囊时，包含它的公开或群组路线会自动降为私密，避免通过路线标题、节点数或分享地址推断尚未解锁的地点。
+
+## 人生轨迹
+
+用户公开主页使用 `profiles.username` 作为稳定地址，并继续接受历史 UUID 链接。迁移会优先把符合安全句柄格式的英文显示名转成小写连字符用户名；其他旧账户使用稳定的 `traveler-<UUID>`。新注册账户由数据库注册触发器生成 `traveler-<UUID>`，普通浏览器客户端没有修改 username 列的权限。
+
+人生轨迹不创建内容副本，也不把私密记录先取回浏览器再隐藏。`get_public_life_path_entries` 和 `get_public_life_path_summary` 在数据库中显式要求 `visibility = 'public'`、`unlock_at` 已到达，并再次调用标准记录读取权限。匿名用户、普通登录用户、作者本人看到的公开人生轨迹边界完全相同：私密记录、群组记录和未来时间胶囊都不参与故事数、时间跨度、地点数或地图连线。
+
+地图按事件当地时间从早到晚连接最多 200 个公开地点，重叠坐标会进行轻微视觉偏移，跨国际日期变更线会拆分线段。主页的代表性故事线路继续复用已发布、未归档的公开 Story Routes，不复制路线或节点数据。
+
+## 首次使用引导
+
+零故事且没有体验偏好记录的登录用户会进入三步流程：选择可跳过的记录方向、在地图上选择地点并完成精简表单、查看第一个故事完成反馈。已有自己故事的老用户会被标记为已跳过，不会在升级后被强制重新引导。带有记录详情、群组、草稿恢复等明确目标的安全站内链接优先执行，不会被 Onboarding 覆盖。
+
+兴趣和完成状态保存在 `user_experience_preferences`，该表不对匿名用户开放，登录用户也只能读取自己的行。写入和完成通过 security-definer RPC；完成 RPC 会验证第一个故事确实由 `auth.uid()` 创建。首次表单继续调用现有 `create_entry_v11`，默认使用最保守的私密范围，不改变 map_entries 结构或既有权限模型。
+
+当前数据库没有图片、独立引用或人物文本字段，因此首次表单不会展示无法保存的假功能；标签和情绪可以在折叠区域中补充，共同经历者在创建完成后通过原有邀请流程添加。
+
 ## 故事路线、连线与分享权限
 
 “故事路线”是独立实体，不修改原始地图记录。`story_route_items` 只保存 `entry_id`、位置和最多 500 字的路线注记，不复制标题、正文、地点或坐标。路线草稿允许 1 个节点，发布至少 2 个，最多 200 个；保存、重排和归档通过受限 RPC 原子执行，普通客户端没有路线节点表的直接写权限。
@@ -304,6 +352,70 @@ psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
   -f supabase/tests/entry_collaboration_rls_assertions.sql
 ```
 
+`supabase/tests/emotion_tags_rls_assertions.sql` 分别以匿名用户、无关登录用户、事件所有者和 accepted 共同经历者身份断言：类型化标签数量只统计可读记录，而公共情绪页始终只返回 `public` 记录：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/emotion_tags_rls_assertions.sql
+```
+
+`supabase/tests/time_capsules_rls_assertions.sql` 断言未来胶囊只对创建者可读，accepted 共同经历者不能提前读取或编辑，关注信息流、标签、情绪页和公共路线均不泄露；测试把解锁时间推进到过去后，再断言原可见性和共同编辑权限自动恢复：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/time_capsules_rls_assertions.sql
+```
+
+`supabase/tests/life_paths_rls_assertions.sql` 以匿名用户、作者和普通登录用户身份断言：公开人生轨迹与统计只包含已解锁公开故事，用户名可公开解析但不能由普通客户端直接修改：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/life_paths_rls_assertions.sql
+```
+
+`supabase/tests/launch_onboarding_rls_assertions.sql` 断言偏好只对本人可见、匿名用户无表权限、普通客户端不能直接写表，并且用户不能拿别人的故事完成自己的 Onboarding：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/launch_onboarding_rls_assertions.sql
+```
+
+`supabase/tests/launch_explore_rls_assertions.sql` 以匿名访客、故事所有者和普通登录用户身份断言：Explore 始终只返回已经解锁的公开故事，分类由受控标签词表执行，未知分类不会扩大查询，分页使用稳定复合游标：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/launch_explore_rls_assertions.sql
+```
+
+`supabase/tests/launch_featured_entries_rls_assertions.sql` 断言匿名访客和故事作者都只能取得已解锁的公开精选故事，普通客户端没有 `featured_at` 写权限，故事转为非公开或未来胶囊时会由触发器自动取消精选：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/launch_featured_entries_rls_assertions.sql
+```
+
+## 编辑精选运营方式
+
+精选状态不是用户荣誉按钮，普通作者不能自行设置。执行 `202608070001_launch_featured_entries.sql` 后，只能从可信后端或 Supabase SQL Editor 维护；不要把 service role key 放入浏览器。选择一条已经公开且已解锁的故事：
+
+```sql
+update public.map_entries
+set featured_at = now()
+where id = '<ENTRY_UUID>'
+  and visibility = 'public'
+  and (unlock_at is null or unlock_at <= now());
+```
+
+取消精选：
+
+```sql
+update public.map_entries
+set featured_at = null
+where id = '<ENTRY_UUID>';
+```
+
+如果精选故事随后改为非公开，或被设置为尚未解锁的时间胶囊，数据库会自动清空 `featured_at`。首页地图以轻量浮层推荐最近设置的 1 条精选，Explore 最多展示 6 条；精选读取失败不会阻断地图和最新公开故事分页，Explore 会明确提示数据库功能尚未初始化或暂时不可用。
+
 `supabase/tests/rls_manual_verification.sql` 保留了已有人工角色模拟说明。SQL Editor 默认高权限角色会绕过 RLS，不能把普通 SQL Editor 查询当作客户端权限验证。
 
 ## 浏览器端到端验证矩阵
@@ -319,6 +431,7 @@ psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
 9. A 创建私密群组并邀请 B；B 接受后才取得访问权。
 10. B 关注 A；信息流只出现 A 的公开记录、B 有权访问的群组记录和 B 自己的记录，不出现 A 的私密记录。
 11. 创建/编辑记录时切换地点分类，地图图标立即更新；多分类与群组筛选可以组合。
+12. 退出登录后访问 `/explore`：公开故事仍可见；私密、群组和未解锁胶囊不出现，五个分类只能返回带有对应公开标签的故事。
 12. 退出登录后，所有 `private` 和 `group` 内容以及已打开详情立即消失。
 13. 在 `/timeline` 选择至少两条记录创建公开路线；公开路线只能接受公开节点，匿名窗口可打开分享链接。
 14. 把其中一个公开节点改为私密；原分享链接应立即不再向匿名用户返回路线或地点数据。
@@ -380,8 +493,10 @@ __MACOSX/
 
 ## 已知限制
 
-- 本轮环境没有 Supabase CLI、Docker 或 `psql`，所以第五、六份 migration 与全部 SQL/RLS 断言尚未在隔离 Supabase 数据库实际执行。
-- 当前远程 Supabase 已能读取群组结构与昵称 RPC，但尚未执行第五、六份 migration，因此时间线、故事路线、群主完整性约束和收紧后的 RPC ACL 在人工执行前不会生效；页面不会用空数组或伪造数据掩盖缺失结构。
+- v1.1 与 v1.2 的 `202608040001` 至 `202608070001` migration 必须按顺序应用；`202608050005` 修复匿名 Explore ACL，`202608050006` 补充复合标签发现能力，`202608070001` 增加可信运营端维护的公开故事精选。
+- Explore 的五个主题分类基于受控标签关键词，不会用正文猜测分类；复合标签（例如 `#成都科幻`、`#文学空间`）可以进入对应分类，未添加相关标签的公开故事仍只会出现在“全部”。
+- `202608070001_launch_featured_entries.sql` 已于 2026-08-07 应用到测试项目 `bmzsabgzzrwekghdceyj`；远程 migration 历史已同步至 `202608070001`，匿名精选 RPC 验证返回 HTTP 200。SQL/RLS 断言脚本仍应只在可丢弃的本地 Supabase 数据库中执行。
+- 尚未设置精选故事时 RPC 会返回空数组，首页不会显示精选浮层，Explore 仍正常展示最新公开故事；这不是初始化错误，也不会用伪造数据填充精选区域。
 - 没有 A/B/C 测试账户，因此多账户浏览器 E2E 需要在 migration 执行后的测试项目中人工或 CI 执行。
 - 同坐标记录暂未聚合，可通过筛选结果列表逐条打开。
 - OpenStreetMap 公共瓦片适合开发和低流量 MVP；生产流量需遵守其政策并评估合规瓦片服务。

@@ -19,6 +19,7 @@ function withLegacyDefaults(value: unknown) {
       typeof value.place_category_slug === "string" ? value.place_category_slug : "other",
     allow_comments:
       typeof value.allow_comments === "boolean" ? value.allow_comments : true,
+    unlock_at: typeof value.unlock_at === "string" ? value.unlock_at : "",
   };
 }
 

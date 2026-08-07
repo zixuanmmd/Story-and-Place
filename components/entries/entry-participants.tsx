@@ -133,7 +133,8 @@ export function EntryParticipants({ entryId }: { entryId: string }) {
 
   return (
     <section className="entry-participants">
-      <h3>共同经历者</h3>
+      <h3>谁可以共同经历与修改？</h3>
+      <p className="section-intro">受邀者接受后才能看到非公开故事。你可以分别决定对方能修改哪些内容；删除故事、更改阅读范围和管理邀请始终只属于创建者。</p>
       <div className="participant-search">
         <input
           type="search"
@@ -166,7 +167,7 @@ export function EntryParticipants({ entryId }: { entryId: string }) {
             <small>{participant.status === "accepted" ? "已接受" : "待接受"}</small>
           </div>
           <fieldset>
-            <legend>可编辑字段</legend>
+            <legend>允许这个人修改</legend>
             {ALL_ENTRY_EDITABLE_FIELDS.map((field) => (
               <label key={field} className="check-row">
                 <input

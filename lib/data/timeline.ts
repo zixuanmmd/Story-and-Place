@@ -16,7 +16,7 @@ export async function listTimelineEntries(
 ) {
   const supabase = getSupabaseBrowserClient();
   const targetId = scope.kind === "group" ? scope.groupId : scope.userId;
-  const { data, error } = await supabase.rpc("get_timeline_entries", {
+  const { data, error } = await supabase.rpc("get_timeline_entries_v11", {
     p_scope: scope.kind,
     p_target_id: targetId,
     p_order: filters.order,
@@ -27,6 +27,8 @@ export async function listTimelineEntries(
     p_start_year: filters.startYear,
     p_end_year: filters.endYear,
     p_include_undated: filters.includeUndated,
+    p_capsule_state:
+      filters.capsuleState === "all" ? null : filters.capsuleState,
     p_offset: page * TIMELINE_PAGE_SIZE,
     p_limit: TIMELINE_PAGE_SIZE + 1,
   });

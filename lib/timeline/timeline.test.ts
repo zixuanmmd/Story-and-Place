@@ -32,6 +32,8 @@ function entry(
     group_id: null,
     place_category_slug: "other",
     allow_comments: true,
+    unlock_at: null,
+    featured_at: null,
     created_at: `2026-01-0${id}T00:00:00Z`,
     updated_at: "2026-01-01T00:00:00Z",
     profiles: { display_name: "山音", avatar_url: null },
@@ -106,7 +108,7 @@ describe("timeline ordering and filtering", () => {
 
   it("validates URL filters and ignores unknown categories", () => {
     const filters = parseTimelineSearchParams(new URLSearchParams(
-      "visibility=private&categories=home,evil&order=asc&start=2001&undated=0",
+      "visibility=private&categories=home,evil&order=asc&start=2001&undated=0&capsule=future",
     ));
     expect(filters).toMatchObject({
       visibility: "private",
@@ -114,6 +116,28 @@ describe("timeline ordering and filtering", () => {
       order: "asc",
       startYear: 2001,
       includeUndated: false,
+      capsuleState: "future",
     });
+  });
+
+  it("filters normal, unlocked and future time capsules deterministically", () => {
+    const now = Date.parse("2030-01-01T00:00:00Z");
+    const rows = [
+      entry("1"),
+      entry("2", { unlock_at: "2029-01-01T00:00:00Z" }),
+      entry("3", { unlock_at: "2035-01-01T00:00:00Z" }),
+    ];
+    expect(filterTimelineEntries(rows, {
+      ...DEFAULT_TIMELINE_FILTERS,
+      capsuleState: "current",
+    }, now).map((row) => row.id)).toEqual(["1"]);
+    expect(filterTimelineEntries(rows, {
+      ...DEFAULT_TIMELINE_FILTERS,
+      capsuleState: "past",
+    }, now).map((row) => row.id)).toEqual(["2"]);
+    expect(filterTimelineEntries(rows, {
+      ...DEFAULT_TIMELINE_FILTERS,
+      capsuleState: "future",
+    }, now).map((row) => row.id)).toEqual(["3"]);
   });
 });

@@ -9,6 +9,13 @@ export type Json =
 export type TimePrecision = "exact" | "date" | "month" | "year" | "approximate";
 export type EntryVisibility = "public" | "private" | "group";
 export type StoryRouteVisibility = "public" | "private" | "group";
+export type TagType = "normal" | "emotion" | "theme" | "character" | "event";
+export type StoryRouteRelationType =
+  | "normal"
+  | "cause"
+  | "memory"
+  | "contrast"
+  | "turning_point";
 export type GroupVisibility = "public" | "private";
 export type GroupRole = "owner" | "admin" | "member";
 export type GroupMemberStatus = "active" | "left" | "removed";
@@ -52,6 +59,15 @@ export type ReportReason =
   | "privacy"
   | "misinformation"
   | "other";
+export type OnboardingPreference = {
+  user_id: string;
+  onboarding_status: "pending" | "completed" | "skipped";
+  interests: string[];
+  first_story_id: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
 
 export type Database = {
   public: {
@@ -59,6 +75,7 @@ export type Database = {
       profiles: {
         Row: {
           id: string;
+          username: string;
           display_name: string;
           avatar_url: string | null;
           bio: string | null;
@@ -67,6 +84,7 @@ export type Database = {
         };
         Insert: {
           id: string;
+          username?: string;
           display_name: string;
           avatar_url?: string | null;
           bio?: string | null;
@@ -74,12 +92,56 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          username?: string;
           display_name?: string;
           avatar_url?: string | null;
           bio?: string | null;
           updated_at?: string;
         };
         Relationships: [];
+      };
+      user_experience_preferences: {
+        Row: {
+          user_id: string;
+          onboarding_status: "pending" | "completed" | "skipped";
+          interests: string[];
+          first_story_id: string | null;
+          finished_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          onboarding_status?: "pending" | "completed" | "skipped";
+          interests?: string[];
+          first_story_id?: string | null;
+          finished_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          onboarding_status?: "pending" | "completed" | "skipped";
+          interests?: string[];
+          first_story_id?: string | null;
+          finished_at?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "user_experience_preferences_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "user_experience_preferences_first_story_id_fkey";
+            columns: ["first_story_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       map_entries: {
         Row: {
@@ -101,6 +163,8 @@ export type Database = {
           group_id: string | null;
           place_category_slug: PlaceCategorySlug;
           allow_comments: boolean;
+          unlock_at: string | null;
+          featured_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -123,6 +187,8 @@ export type Database = {
           group_id?: string | null;
           place_category_slug?: PlaceCategorySlug;
           allow_comments?: boolean;
+          unlock_at?: string | null;
+          featured_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -143,6 +209,8 @@ export type Database = {
           group_id?: string | null;
           place_category_slug?: PlaceCategorySlug;
           allow_comments?: boolean;
+          unlock_at?: string | null;
+          featured_at?: string | null;
           updated_at?: string;
         };
         Relationships: [
@@ -259,6 +327,8 @@ export type Database = {
           name: string;
           normalized_name: string;
           slug: string;
+          type: TagType;
+          semantic_key: string | null;
           created_by: string | null;
           created_at: string;
         };
@@ -267,10 +337,17 @@ export type Database = {
           name: string;
           normalized_name: string;
           slug?: string;
+          type?: TagType;
+          semantic_key?: string | null;
           created_by?: string | null;
           created_at?: string;
         };
-        Update: { name?: string; normalized_name?: string };
+        Update: {
+          name?: string;
+          normalized_name?: string;
+          type?: TagType;
+          semantic_key?: string | null;
+        };
         Relationships: [];
       };
       entry_tags: {
@@ -594,6 +671,7 @@ export type Database = {
           entry_id: string;
           position: number;
           note: string;
+          relation_type: StoryRouteRelationType;
           created_at: string;
         };
         Insert: {
@@ -602,9 +680,14 @@ export type Database = {
           entry_id: string;
           position: number;
           note?: string;
+          relation_type?: StoryRouteRelationType;
           created_at?: string;
         };
-        Update: { position?: number; note?: string };
+        Update: {
+          position?: number;
+          note?: string;
+          relation_type?: StoryRouteRelationType;
+        };
         Relationships: [
           {
             foreignKeyName: "story_route_items_route_id_fkey";
@@ -628,6 +711,45 @@ export type Database = {
       is_display_name_available: {
         Args: { candidate: string };
         Returns: boolean;
+      };
+      set_onboarding_preferences: {
+        Args: { p_interests?: string[]; p_action?: "save" | "skip" };
+        Returns: OnboardingPreference;
+      };
+      complete_onboarding: {
+        Args: { p_entry_id: string };
+        Returns: OnboardingPreference;
+      };
+      resolve_public_profile: {
+        Args: { p_identifier: string };
+        Returns: Array<{
+          id: string;
+          username: string;
+          display_name: string;
+          avatar_url: string | null;
+          bio: string | null;
+          created_at: string;
+          updated_at: string;
+        }>;
+      };
+      get_public_life_path_entries: {
+        Args: {
+          p_profile_id: string;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
+      get_public_life_path_summary: {
+        Args: { p_profile_id: string };
+        Returns: Array<{
+          public_story_count: number;
+          earliest_year: number | null;
+          latest_year: number | null;
+          distinct_place_count: number;
+          first_time_label: string | null;
+          last_time_label: string | null;
+        }>;
       };
       join_public_group: { Args: { p_group_id: string }; Returns: undefined };
       leave_group: { Args: { p_group_id: string }; Returns: undefined };
@@ -660,6 +782,18 @@ export type Database = {
         Returns: undefined;
       };
       get_social_feed: {
+        Args: {
+          p_cursor_created_at?: string | null;
+          p_cursor_id?: string | null;
+          p_limit?: number;
+        };
+        Returns: FeedEntry[];
+      };
+      get_featured_public_entries: {
+        Args: { p_limit?: number };
+        Returns: MapEntry[];
+      };
+      get_social_feed_v11: {
         Args: {
           p_cursor_created_at?: string | null;
           p_cursor_id?: string | null;
@@ -707,6 +841,24 @@ export type Database = {
           p_start_year?: number | null;
           p_end_year?: number | null;
           p_include_undated?: boolean;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
+      get_timeline_entries_v11: {
+        Args: {
+          p_scope: "mine" | "user" | "group";
+          p_target_id: string;
+          p_order?: "asc" | "desc";
+          p_visibility?: EntryVisibility | null;
+          p_category_slugs?: string[] | null;
+          p_author_id?: string | null;
+          p_keyword?: string | null;
+          p_start_year?: number | null;
+          p_end_year?: number | null;
+          p_include_undated?: boolean;
+          p_capsule_state?: "past" | "current" | "future" | null;
           p_offset?: number;
           p_limit?: number;
         };
@@ -760,6 +912,18 @@ export type Database = {
         };
         Returns: Json;
       };
+      create_entry_v11: {
+        Args: { p_entry: Json; p_tag_names?: string[] };
+        Returns: Json;
+      };
+      update_entry_v11: {
+        Args: {
+          p_entry_id: string;
+          p_patch: Json;
+          p_tag_names?: string[] | null;
+        };
+        Returns: Json;
+      };
       set_entry_tags: {
         Args: { p_entry_id: string; p_tag_names: string[] };
         Returns: undefined;
@@ -775,6 +939,66 @@ export type Database = {
       get_visible_tag_summary: {
         Args: { p_tag_slug: string };
         Returns: Array<{ slug: string; name: string; entry_count: number }>;
+      };
+      get_visible_tags: {
+        Args: {
+          p_tag_type?: TagType | null;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Array<{
+          slug: string;
+          name: string;
+          tag_type: TagType;
+          semantic_key: string | null;
+          entry_count: number;
+        }>;
+      };
+      get_typed_tag_entries: {
+        Args: {
+          p_tag_slug: string;
+          p_tag_type?: TagType | null;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
+      get_visible_tag_summary_v11: {
+        Args: { p_tag_slug: string; p_tag_type?: TagType | null };
+        Returns: Array<{
+          slug: string;
+          name: string;
+          tag_type: TagType;
+          semantic_key: string | null;
+          entry_count: number;
+        }>;
+      };
+      get_public_emotion_entries: {
+        Args: {
+          p_emotion: string;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: Json[];
+      };
+      get_public_emotion_summary: {
+        Args: { p_emotion: string };
+        Returns: Array<{
+          slug: string;
+          name: string;
+          tag_type: "emotion";
+          semantic_key: string;
+          entry_count: number;
+        }>;
+      };
+      get_public_explore_entries: {
+        Args: {
+          p_category?: string;
+          p_cursor_created_at?: string | null;
+          p_cursor_id?: string | null;
+          p_limit?: number;
+        };
+        Returns: MapEntry[];
       };
     };
     Enums: Record<string, never>;
@@ -803,7 +1027,7 @@ export type EntryParticipantWithProfile = EntryParticipant & {
 };
 
 export type EntryTagWithTag = EntryTag & {
-  tags: Pick<Tag, "id" | "name" | "slug"> | null;
+  tags: Pick<Tag, "id" | "name" | "slug" | "type" | "semantic_key"> | null;
 };
 
 export type MapEntryWithProfile = MapEntry & {
@@ -834,6 +1058,7 @@ export type FeedEntry = {
   group_id: string | null;
   place_category_slug: PlaceCategorySlug;
   allow_comments: boolean;
+  unlock_at: string | null;
   created_at: string;
   updated_at: string;
   author_display_name: string;

@@ -151,6 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setProfileState({ userId: null, profile: null });
       for (const key of [
         "story-map-pending-entry",
+        "story-map-onboarding-draft",
         "story-route-selection-v1",
       ]) {
         window.sessionStorage.removeItem(key);
