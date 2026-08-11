@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { getBrowserTimeZone } from "@/lib/time/local-date-time";
 import {
@@ -19,22 +19,32 @@ import {
   getStoryTemplate,
   type StoryTemplateId,
 } from "@/lib/templates/story-templates";
+import { useAuth } from "@/components/providers/auth-provider";
+import { useEntryAutosave } from "@/hooks/use-entry-autosave";
+import { createEntryDraftPayload } from "@/lib/validation/entry-draft";
+import type { EntryDraft } from "@/types/database";
+import type { EntryDraftRef } from "@/lib/data/entry-drafts";
 
 const EMOTION_SUGGESTIONS = ["孤独", "重逢", "成长", "遗憾", "失去", "希望", "恐惧"];
 
 export function OnboardingEntryForm({
   coordinates,
   initialValues,
+  initialDraft,
   initialTemplateId = null,
   onSave,
   onCancel,
+  onDraftCreated,
 }: {
   coordinates: Coordinates;
   initialValues?: EntryFormValues;
+  initialDraft?: EntryDraft;
   initialTemplateId?: StoryTemplateId | null;
-  onSave: (values: EntryFormValues, tagNames: string[]) => Promise<void>;
+  onSave: (values: EntryFormValues, tagNames: string[], draft: EntryDraftRef | null) => Promise<void>;
   onCancel: () => void;
+  onDraftCreated?: (id: string) => void;
 }) {
+  const { user } = useAuth();
   const form = useForm<EntryFormValues>({
     resolver: zodResolver(entryFormSchema),
     defaultValues: applyStoryTemplateDefaults(initialValues ? {
@@ -60,10 +70,25 @@ export function OnboardingEntryForm({
   const precision = useWatch({ control: form.control, name: "time_precision" });
   const content = useWatch({ control: form.control, name: "content" });
   const placeName = useWatch({ control: form.control, name: "place_name" });
-  const [tagInput, setTagInput] = useState(() => addTemplateTag("", initialTemplateId));
+  const watchedValues = useWatch({ control: form.control });
+  const [tagInput, setTagInput] = useState(() =>
+    initialDraft?.tag_input ?? addTemplateTag("", initialTemplateId),
+  );
   const [selectedTemplateId, setSelectedTemplateId] =
     useState<StoryTemplateId | null>(initialTemplateId);
   const [tagError, setTagError] = useState<string | null>(null);
+  const draftPayload = useMemo(
+    () => createEntryDraftPayload(watchedValues as EntryFormValues),
+    [watchedValues],
+  );
+  const autosave = useEntryAutosave({
+    enabled: Boolean(user),
+    sourceEntryId: null,
+    payload: draftPayload,
+    tagInput,
+    initialDraft,
+    onDraftCreated,
+  });
 
   const selectTemplate = (templateId: StoryTemplateId | null) => {
     setSelectedTemplateId(templateId);
@@ -119,14 +144,27 @@ export function OnboardingEntryForm({
       setTagError(tags.error.issues[0]?.message ?? "标签格式无效。");
       return;
     }
-    await onSave({ ...values, title: deriveFirstStoryTitle(values.content, values.place_name) }, tags.data);
+    try {
+      const draft = await autosave.flush();
+      await onSave(
+        { ...values, title: deriveFirstStoryTitle(values.content, values.place_name) },
+        tags.data,
+        draft,
+      );
+    } catch {
+      setTagError(autosave.message ?? "草稿尚未安全保存，请稍后重试。");
+    }
+  };
+
+  const cancel = () => {
+    void autosave.flush().catch(() => undefined).then(onCancel);
   };
 
   return (
     <form className="entry-form onboarding-entry-form stack-form" onSubmit={form.handleSubmit(submit)} noValidate>
       <div className="form-title-row">
         <div><p className="eyebrow">STEP 2 · FIRST PLACE</p><h2>从这个地方开始</h2></div>
-        <button className="icon-button" type="button" onClick={onCancel} aria-label="关闭首次故事表单">×</button>
+        <button className="icon-button" type="button" onClick={cancel} aria-label="关闭首次故事表单">×</button>
       </div>
       <p className="onboarding-form-intro">不用一次写得完整。先留下地点、时间和你最想记住的那句话。</p>
 
@@ -183,7 +221,12 @@ export function OnboardingEntryForm({
       </details>
 
       <p className="privacy-note"><span aria-hidden="true">🔒</span>首次故事默认只对你和后来接受邀请的共同经历者可见，创建后可以调整。</p>
-      <div className="form-actions"><button className="secondary-button" type="button" onClick={onCancel}>返回</button><button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting ? "正在保存…" : "完成第一个故事"}</button></div>
+      <div className="form-actions">
+        <div className={`draft-save-state draft-save-state--${autosave.status}`} role="status">
+          {autosave.message ?? ({ idle: "尚未保存草稿", pending: "等待自动保存…", saving: "正在保存草稿…", saved: "草稿已保存", error: "草稿保存失败", conflict: "草稿存在编辑冲突" }[autosave.status])}
+        </div>
+        <button className="secondary-button" type="button" onClick={cancel}>返回</button><button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting ? "正在保存…" : "完成第一个故事"}</button>
+      </div>
     </form>
   );
 }

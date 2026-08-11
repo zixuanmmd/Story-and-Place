@@ -6,6 +6,7 @@ import { AppHeader } from "@/components/navigation/app-header";
 import { ProtectedState } from "@/components/layout/protected-state";
 import { useAuth } from "@/components/providers/auth-provider";
 import {
+  ENTRY_EDITABLE_FIELD_LABELS,
   listMyEntryInvitations,
   respondEntryParticipantInvitation,
   type EntryInvitation,
@@ -22,15 +23,23 @@ export function EntryInvitationsView() {
 function EntryInvitationsForUser() {
   const { user, loading, configured } = useAuth();
   const [invitations, setInvitations] = useState<EntryInvitation[]>([]);
+  const [queryLoading, setQueryLoading] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [acceptedEntryId, setAcceptedEntryId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const load = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setInvitations([]);
+      setQueryLoading(false);
+      return;
+    }
+    setQueryLoading(true);
     try {
       setInvitations(await listMyEntryInvitations(user.id));
     } catch (error) {
       setStatus(getFriendlyError(error, "共同经历邀请暂时无法读取。"));
+    } finally {
+      setQueryLoading(false);
     }
   }, [user]);
   useEffect(() => {
@@ -83,7 +92,7 @@ function EntryInvitationsForUser() {
 
   let content;
   if (!configured) content = <ProtectedState kind="config" />;
-  else if (loading) content = <ProtectedState kind="loading" />;
+  else if (loading || queryLoading) content = <ProtectedState kind="loading" />;
   else if (!user) {
     content = (
       <ProtectedState
@@ -102,7 +111,9 @@ function EntryInvitationsForUser() {
               <h2>{invitation.inviter?.display_name ?? "一位地图旅人"}邀请你共同记录一段经历</h2>
               <p>
                 接受前不会显示私密事件内容。接受后可编辑：
-                {invitation.editable_fields.join("、") || "无字段（仅共同经历者）"}
+                {invitation.editable_fields
+                  .map((field) => ENTRY_EDITABLE_FIELD_LABELS[field])
+                  .join("、") || "无字段（仅共同经历者）"}
               </p>
             </div>
             <div className="record-actions">

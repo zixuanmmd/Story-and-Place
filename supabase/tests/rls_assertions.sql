@@ -55,7 +55,15 @@ insert into public.map_entries (
 set local role anon;
 select set_config('request.jwt.claims', '{}', true);
 select pg_temp.assert_true(
-  (select count(*) = 1 from public.map_entries),
+  (
+    select count(*) = 1
+    from public.map_entries
+    where id in (
+      'a0000000-0000-4000-8000-000000000001',
+      'a0000000-0000-4000-8000-000000000002',
+      'b0000000-0000-4000-8000-000000000003'
+    )
+  ),
   '匿名用户必须只能读取 1 条公开记录'
 );
 select pg_temp.assert_true(

@@ -21,6 +21,8 @@ import { EntryDetail } from "@/components/entries/entry-detail";
 import { FilterPanel } from "@/components/entries/filter-panel";
 import { ConfirmDialog } from "@/components/entries/confirm-dialog";
 import { MapErrorBoundary } from "@/components/map/map-error-boundary";
+import { TimePlaybackControl } from "@/components/map/time-playback-control";
+import { PlaceStoryLayer } from "@/components/map/place-story-layer";
 import {
   createEntry,
   deleteEntry,
@@ -62,6 +64,25 @@ import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 import { ensureOnboardingDecision } from "@/lib/data/onboarding";
 import { parseStoryTemplateId } from "@/lib/templates/story-templates";
 import { listFeaturedPublicEntries } from "@/lib/data/explore";
+import {
+  getEntryDraft,
+  publishEntryDraft,
+  type EntryDraftRef,
+} from "@/lib/data/entry-drafts";
+import {
+  draftPayloadToFormValues,
+  parseEntryDraftPayload,
+} from "@/lib/validation/entry-draft";
+import type { EntryDraft } from "@/types/database";
+import {
+  DEFAULT_TIME_PLAYBACK_STATE,
+  filterEntriesForTimePlayback,
+  type TimePlaybackState,
+} from "@/lib/map/time-playback";
+import {
+  clusterEntriesByPlace,
+  type PlaceStoryCluster,
+} from "@/lib/map/place-story-clusters";
 
 const MapCanvas = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -76,8 +97,8 @@ const MapCanvas = dynamic(
 );
 
 type EditorState =
-  | { mode: "create"; coordinates: Coordinates; initialValues?: EntryFormValues }
-  | { mode: "edit"; entry: MapEntryWithProfile }
+  | { mode: "create"; coordinates: Coordinates; initialValues?: EntryFormValues; initialDraft?: EntryDraft }
+  | { mode: "edit"; entry: MapEntryWithProfile; initialValues?: EntryFormValues; initialDraft?: EntryDraft }
   | null;
 
 type MobilePanel = "filters" | "details" | "editor" | null;
@@ -123,6 +144,7 @@ function MapExperienceForScope({
   const router = useRouter();
   const searchParams = useSearchParams();
   const handledUrlEntry = useRef<string | null>(null);
+  const handledUrlDraft = useRef<string | null>(null);
   const handledGroupDraft = useRef<string | null>(null);
   const restoredDraftForUser = useRef<string | null>(null);
 
@@ -133,6 +155,10 @@ function MapExperienceForScope({
   const [deleteTarget, setDeleteTarget] = useState<MapEntryWithProfile | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [filters, setFilters] = useState<EntryFilters>(DEFAULT_ENTRY_FILTERS);
+  const [timePlayback, setTimePlayback] = useState<TimePlaybackState>(
+    DEFAULT_TIME_PLAYBACK_STATE,
+  );
+  const [selectedPlaceClusterId, setSelectedPlaceClusterId] = useState<string | null>(null);
   const [bounds, setBounds] = useState<MapBoundsValue | null>(null);
   const [viewCenter, setViewCenter] = useState<Coordinates>({ latitude: 25, longitude: 15 });
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>(null);
@@ -282,6 +308,7 @@ function MapExperienceForScope({
 
   useEffect(() => {
     if (authLoading || loading || !configured) return;
+    if (searchParams.get("draft")) return;
     const requestedId = searchParams.get("entry");
     if (!requestedId || handledUrlEntry.current === requestedId) return;
     handledUrlEntry.current = requestedId;
@@ -320,6 +347,54 @@ function MapExperienceForScope({
   }, [authLoading, configured, entries, entryQuery, loading, searchParams, user]);
 
   useEffect(() => {
+    const draftId = searchParams.get("draft");
+    if (!user || authLoading || loading || !configured || !draftId) return;
+    if (handledUrlDraft.current === draftId) return;
+    handledUrlDraft.current = draftId;
+    let active = true;
+    void getEntryDraft(draftId).then(async (draft) => {
+      if (!active) return;
+      const payload = draft ? parseEntryDraftPayload(draft.payload) : null;
+      if (!draft || !payload) {
+        setStatus("这份草稿不存在，或你已经没有访问权限。");
+        return;
+      }
+      if (draft.source_entry_id) {
+        const entry = await getEntryById(draft.source_entry_id);
+        if (!active) return;
+        if (!entry || entry.user_id !== user.id) {
+          setStatus("原故事已不存在，或草稿不再可编辑。");
+          return;
+        }
+        setSelectedEntry(entry);
+        setEditor({
+          mode: "edit",
+          entry,
+          initialDraft: draft,
+          initialValues: draftPayloadToFormValues(payload, entry),
+        });
+      } else {
+        const initialValues = draftPayloadToFormValues(payload, { latitude: 25, longitude: 15 });
+        setSelectedEntry(null);
+        setEditor({
+          mode: "create",
+          coordinates: {
+            latitude: initialValues.latitude,
+            longitude: initialValues.longitude,
+          },
+          initialValues,
+          initialDraft: draft,
+        });
+      }
+      setMobilePanel("editor");
+      setStatus("草稿已恢复，可以继续写作。");
+    }).catch((error) => {
+      if (active) setStatus(getFriendlyError(error, "草稿加载失败，请稍后重试。"));
+    });
+    return () => { active = false; };
+  }, [authLoading, configured, loading, searchParams, user]);
+
+  useEffect(() => {
     if (!user || restoredDraftForUser.current === user.id) return;
     restoredDraftForUser.current = user.id;
     const stored = window.sessionStorage.getItem(DRAFT_STORAGE_KEY);
@@ -348,12 +423,36 @@ function MapExperienceForScope({
     () => filterEntriesForActiveGroups(entries, activeGroupIds),
     [activeGroupIds, entries],
   );
-  const filteredEntries = useMemo(
+  const baseFilteredEntries = useMemo(
     () => filterEntries(membershipSafeEntries, filters, user?.id ?? null, bounds),
     [bounds, filters, membershipSafeEntries, user?.id],
   );
+  const filteredEntries = useMemo(
+    () => filterEntriesForTimePlayback(
+      baseFilteredEntries,
+      timePlayback,
+      user?.id ?? null,
+    ),
+    [baseFilteredEntries, timePlayback, user?.id],
+  );
+  const placeClusters = useMemo(
+    () => clusterEntriesByPlace(filteredEntries),
+    [filteredEntries],
+  );
+  const selectedPlaceCluster = selectedPlaceClusterId
+    ? placeClusters.find((cluster) => cluster.id === selectedPlaceClusterId) ?? null
+    : null;
+  const changeFilters = useCallback((nextFilters: EntryFilters) => {
+    setSelectedPlaceClusterId(null);
+    setFilters(nextFilters);
+  }, []);
+  const changeTimePlayback = useCallback((nextState: TimePlaybackState) => {
+    setSelectedPlaceClusterId(null);
+    setTimePlayback(nextState);
+  }, []);
   const startCreate = useCallback((coordinates: Coordinates) => {
     setSelectedEntry(null);
+    setSelectedPlaceClusterId(null);
     setEditor({ mode: "create", coordinates });
     setMobilePanel("editor");
     setStatus(null);
@@ -387,10 +486,23 @@ function MapExperienceForScope({
   const selectEntry = useCallback((entry: MapEntryWithProfile) => {
     setEditor(null);
     setSelectedEntry(entry);
+    setSelectedPlaceClusterId(null);
     setMyParticipation(null);
     setMobilePanel("details");
     const nextUrl = new URL(window.location.href);
     nextUrl.searchParams.set("entry", entry.id);
+    nextUrl.searchParams.delete("edit");
+    window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+  }, []);
+
+  const selectPlaceCluster = useCallback((cluster: PlaceStoryCluster) => {
+    setEditor(null);
+    setSelectedEntry(null);
+    setMyParticipation(null);
+    setSelectedPlaceClusterId(cluster.id);
+    setMobilePanel("details");
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete("entry");
     nextUrl.searchParams.delete("edit");
     window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
   }, []);
@@ -441,7 +553,11 @@ function MapExperienceForScope({
     );
   }, []);
 
-  const saveEntry = async (values: EntryFormValues, tagNames: string[]) => {
+  const saveEntry = async (
+    values: EntryFormValues,
+    tagNames: string[],
+    draft: EntryDraftRef | null,
+  ) => {
     if (!user) {
       window.sessionStorage.setItem(DRAFT_STORAGE_KEY, serializeEntryDraft(values));
       if (isOnboardingFlow) window.sessionStorage.setItem("story-map-onboarding-draft", "1");
@@ -456,7 +572,9 @@ function MapExperienceForScope({
     }
 
     const outcome = await settleAction(async () =>
-        editor?.mode === "edit"
+        draft && (editor?.mode !== "edit" || editor.entry.user_id === user.id)
+          ? await publishEntryDraft(draft, values, tagNames)
+          : editor?.mode === "edit"
           ? await updateEntry(
               editor.entry.id,
               values,
@@ -487,8 +605,16 @@ function MapExperienceForScope({
     setSelectedEntry(saved);
     setEditor(null);
     setMobilePanel("details");
+    window.history.replaceState(null, "", `/?entry=${saved.id}`);
     setStatus(editor?.mode === "edit" ? "记录已更新。" : "记录已创建，并已显示在地图上。 ");
   };
+
+  const handleDraftCreated = useCallback((draftId: string) => {
+    handledUrlDraft.current = draftId;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("draft", draftId);
+    window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+  }, []);
 
   const toggleVisibility = async (entry: MapEntryWithProfile) => {
     setActionBusy(true);
@@ -528,6 +654,7 @@ function MapExperienceForScope({
   const closePanels = () => {
     setEditor(null);
     setSelectedEntry(null);
+    setSelectedPlaceClusterId(null);
     setMobilePanel(null);
     window.history.replaceState(null, "", "/");
   };
@@ -536,27 +663,36 @@ function MapExperienceForScope({
     editor.mode === "create" ? (
       isOnboardingFlow ? (
         <OnboardingEntryForm
+          key={editor.initialDraft?.id ?? `onboarding-${editor.coordinates.latitude}-${editor.coordinates.longitude}`}
           coordinates={editor.coordinates}
           initialValues={editor.initialValues}
+          initialDraft={editor.initialDraft}
           initialTemplateId={initialTemplateId}
           onSave={saveEntry}
+          onDraftCreated={handleDraftCreated}
           onCancel={closePanels}
         />
       ) : (
         <EntryForm
+          key={editor.initialDraft?.id ?? `create-${editor.coordinates.latitude}-${editor.coordinates.longitude}`}
           mode="create"
           coordinates={editor.coordinates}
           initialValues={editor.initialValues}
+          initialDraft={editor.initialDraft}
           initialGroupId={searchParams.get("group") ?? undefined}
           initialTemplateId={initialTemplateId}
           onSave={saveEntry}
+          onDraftCreated={handleDraftCreated}
           onCancel={closePanels}
         />
       )
     ) : (
       <EntryForm
+        key={editor.initialDraft?.id ?? `edit-${editor.entry.id}`}
         mode="edit"
         entry={editor.entry}
+        initialValues={editor.initialValues}
+        initialDraft={editor.initialDraft}
         isOwner={editor.entry.user_id === user?.id}
         editableFields={getParticipantEditableFields(
           editor.entry,
@@ -564,6 +700,7 @@ function MapExperienceForScope({
           activeParticipation,
         )}
         onSave={saveEntry}
+        onDraftCreated={handleDraftCreated}
         onCancel={() => { setEditor(null); setMobilePanel("details"); }}
       />
     )
@@ -585,6 +722,12 @@ function MapExperienceForScope({
       onDelete={() => setDeleteTarget(renderableSelectedEntry)}
       onToggleVisibility={() => void toggleVisibility(renderableSelectedEntry)}
     />
+  ) : selectedPlaceCluster ? (
+    <PlaceStoryLayer
+      cluster={selectedPlaceCluster}
+      onClose={closePanels}
+      onSelectEntry={selectEntry}
+    />
   ) : (
     user && !entries.some((entry) => entry.user_id === user.id) ? (
       <GuidedEmptyState eyebrow="YOUR FIRST PLACE" title="你的故事地图还是空白。" description="从一个地方开始。点击地图，留下时间和你仍然记得的事情。"><button className="primary-button" type="button" onClick={() => startCreate(viewCenter)}>选择地图中心</button></GuidedEmptyState>
@@ -600,7 +743,7 @@ function MapExperienceForScope({
       <AppHeader />
       <section className="map-layout">
         <aside className="filter-panel" aria-label="记录筛选">
-          <FilterPanel filters={filters} entries={filteredEntries} isLoggedIn={Boolean(user)} groupOptions={groupOptions} truncated={entryQuery.truncated} onChange={setFilters} onSelectEntry={selectEntry} />
+          <FilterPanel filters={filters} entries={filteredEntries} isLoggedIn={Boolean(user)} groupOptions={groupOptions} truncated={entryQuery.truncated} onChange={changeFilters} onSelectEntry={selectEntry} />
         </aside>
 
         <div className="map-stage">
@@ -608,11 +751,13 @@ function MapExperienceForScope({
             <MapCanvas
               key={scope}
               scopeKey={scope}
-              entries={filteredEntries}
+              clusters={placeClusters}
               selectedEntryId={renderableSelectedEntry?.id ?? null}
+              selectedClusterId={selectedPlaceCluster?.id ?? null}
               draftCoordinates={editor?.mode === "create" ? editor.coordinates : null}
               onMapClick={startCreate}
               onEntryClick={selectEntry}
+              onPlaceClusterClick={selectPlaceCluster}
               onTileError={handleTileError}
               onLocationError={setStatus}
               onViewChange={handleViewChange}
@@ -640,6 +785,15 @@ function MapExperienceForScope({
             </aside>
           ) : null}
 
+          {!isOnboardingFlow ? (
+            <TimePlaybackControl
+              entries={baseFilteredEntries}
+              filteredCount={filteredEntries.length}
+              state={timePlayback}
+              onChange={changeTimePlayback}
+            />
+          ) : null}
+
           <button className="mobile-filter-button" type="button" onClick={() => setMobilePanel("filters")}>☷ 筛选</button>
           <button className="floating-create" type="button" onClick={() => startCreate(viewCenter)}>
             <span aria-hidden="true">＋</span>{isOnboardingFlow ? "从地图中心开始" : "新建记录"}
@@ -660,7 +814,7 @@ function MapExperienceForScope({
 
       {mobilePanel === "filters" ? (
         <div className="mobile-sheet mobile-sheet--filters">
-          <FilterPanel filters={filters} entries={filteredEntries} isLoggedIn={Boolean(user)} groupOptions={groupOptions} truncated={entryQuery.truncated} onChange={setFilters} onSelectEntry={selectEntry} onClose={() => setMobilePanel(null)} />
+          <FilterPanel filters={filters} entries={filteredEntries} isLoggedIn={Boolean(user)} groupOptions={groupOptions} truncated={entryQuery.truncated} onChange={changeFilters} onSelectEntry={selectEntry} onClose={() => setMobilePanel(null)} />
         </div>
       ) : null}
 

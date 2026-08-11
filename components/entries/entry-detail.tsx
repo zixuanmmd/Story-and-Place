@@ -85,6 +85,10 @@ export function EntryDetail({
       <EntryTags entry={entry} />
       <div className="detail-content">{entry.content}</div>
 
+      <div className="detail-share-link">
+        <Link href={`/entries/${entry.id}`}>打开独立故事页与分享链接</Link>
+      </div>
+
       <dl className="detail-meta">
         <div><dt>时间精度</dt><dd>{TIME_PRECISION_LABELS[entry.time_precision]}</dd></div>
         {entry.time_precision === "exact" ? <div><dt>事件时区</dt><dd>{entry.occurred_timezone ?? "未知（保留原当地时间）"}</dd></div> : null}

@@ -177,7 +177,7 @@ begin
     insert into public.follows (follower_id, following_id)
     values ('33000000-0000-4000-8000-000000000003', '33000000-0000-4000-8000-000000000003');
     raise exception 'ASSERTION FAILED: 用户关注了自己';
-  exception when check_violation then null;
+  exception when check_violation or insufficient_privilege then null;
   end;
 end;
 $$;

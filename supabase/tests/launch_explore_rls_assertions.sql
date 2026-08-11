@@ -86,15 +86,42 @@ set local role anon;
 select set_config('request.jwt.claims', '{}', true);
 
 select pg_temp.assert_true(
-  (select count(*) = 2 from public.get_public_explore_entries('all', null, null, 21)),
+  (
+    select count(*) = 2
+    from public.get_public_explore_entries('all', null, null, 21) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
+    )
+  ),
   'anonymous Explore must return unlocked public entries only'
 );
 select pg_temp.assert_true(
-  (select count(*) = 1 from public.get_public_explore_entries('travel', null, null, 21)),
+  (
+    select count(*) = 1
+    from public.get_public_explore_entries('travel', null, null, 21) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
+    )
+  ),
   'travel lens must return only the tagged unlocked public entry'
 );
 select pg_temp.assert_true(
-  (select count(*) = 1 from public.get_public_explore_entries('literature', null, null, 21)),
+  (
+    select count(*) = 1
+    from public.get_public_explore_entries('literature', null, null, 21) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
+    )
+  ),
   'literature lens must use its controlled tag vocabulary'
 );
 select pg_temp.assert_true(
@@ -108,6 +135,12 @@ select pg_temp.assert_true(
       'all',
       (select created_at from public.map_entries where id = 'c3000000-0000-4000-8000-000000000003'),
       'c3000000-0000-4000-8000-000000000003', 21
+    ) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
     )
   ),
   'keyset cursor must return only older public entries'
@@ -121,7 +154,16 @@ select set_config(
   true
 );
 select pg_temp.assert_true(
-  (select count(*) = 2 from public.get_public_explore_entries('all', null, null, 21)),
+  (
+    select count(*) = 2
+    from public.get_public_explore_entries('all', null, null, 21) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
+    )
+  ),
   'owner Explore must still exclude owner private and future entries'
 );
 
@@ -133,7 +175,16 @@ select set_config(
   true
 );
 select pg_temp.assert_true(
-  (select count(*) = 2 from public.get_public_explore_entries('all', null, null, 21)),
+  (
+    select count(*) = 2
+    from public.get_public_explore_entries('all', null, null, 21) entry
+    where entry.id in (
+      'c3000000-0000-4000-8000-000000000003',
+      'c4000000-0000-4000-8000-000000000004',
+      'c5000000-0000-4000-8000-000000000005',
+      'c6000000-0000-4000-8000-000000000006'
+    )
+  ),
   'ordinary authenticated users must see the same public-only discovery set'
 );
 

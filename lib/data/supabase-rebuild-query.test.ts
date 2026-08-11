@@ -29,6 +29,12 @@ const migrationNames = [
   "202608050005_launch_explore_acl_fix.sql",
   "202608050006_launch_explore_keyword_lenses.sql",
   "202608070001_launch_featured_entries.sql",
+  "202608080001_v13_global_search.sql",
+  "202608080002_v13_entry_drafts.sql",
+  "202608080003_v13_data_portability_account_deletion.sql",
+  "202608110001_v13_global_search_escape_fix.sql",
+  "202608110002_trigger_function_execute_hardening.sql",
+  "20260811111243_timeline_participant_acl_fix.sql",
 ];
 
 describe("Supabase 完整重建 Query", () => {
@@ -71,6 +77,8 @@ describe("Supabase 完整重建 Query", () => {
       "public.story_routes",
       "public.entry_participants",
       "public.tags",
+      "public.entry_drafts",
+      "public.account_deletion_requests",
     ]) {
       expect(rebuildQuery).toContain(`to_regclass('${relation}')`);
     }

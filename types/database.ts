@@ -8,6 +8,7 @@ export type Json =
 
 export type TimePrecision = "exact" | "date" | "month" | "year" | "approximate";
 export type EntryVisibility = "public" | "private" | "group";
+export type EntryDraftStatus = "draft" | "published" | "discarded";
 export type StoryRouteVisibility = "public" | "private" | "group";
 export type TagType = "normal" | "emotion" | "theme" | "character" | "event";
 export type StoryRouteRelationType =
@@ -69,6 +70,39 @@ export type OnboardingPreference = {
   updated_at: string;
 };
 
+export type GlobalSearchResultType =
+  | "entry"
+  | "profile"
+  | "route"
+  | "tag"
+  | "emotion";
+
+export type GlobalSearchResult = {
+  result_type: GlobalSearchResultType;
+  result_id: string;
+  title: string;
+  subtitle: string;
+  excerpt: string;
+  href: string;
+  occurred_year: number | null;
+  time_label: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  visibility: EntryVisibility | StoryRouteVisibility | null;
+  place_category_slug: PlaceCategorySlug | null;
+  author_id: string | null;
+  author_name: string | null;
+  author_avatar_url: string | null;
+  tag_type: TagType | null;
+  tag_slug: string | null;
+  share_slug: string | null;
+  created_at: string;
+  total_count: number;
+};
+
+export type AccountDeletionMode = "delete_all" | "preserve_public";
+export type AccountDeletionStatus = "pending" | "processing" | "completed" | "failed";
+
 export type Database = {
   public: {
     Tables: {
@@ -79,6 +113,7 @@ export type Database = {
           display_name: string;
           avatar_url: string | null;
           bio: string | null;
+          deleted_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -88,6 +123,7 @@ export type Database = {
           display_name: string;
           avatar_url?: string | null;
           bio?: string | null;
+          deleted_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -96,6 +132,7 @@ export type Database = {
           display_name?: string;
           avatar_url?: string | null;
           bio?: string | null;
+          deleted_at?: string | null;
           updated_at?: string;
         };
         Relationships: [];
@@ -139,6 +176,104 @@ export type Database = {
             columns: ["first_story_id"];
             isOneToOne: false;
             referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      entry_drafts: {
+        Row: {
+          id: string;
+          user_id: string;
+          source_entry_id: string | null;
+          source_updated_at: string | null;
+          payload: Json | null;
+          tag_input: string;
+          revision: number;
+          client_instance_id: string;
+          status: EntryDraftStatus;
+          published_entry_id: string | null;
+          published_at: string | null;
+          discarded_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          source_entry_id?: string | null;
+          source_updated_at?: string | null;
+          payload: Json;
+          tag_input?: string;
+          revision?: number;
+          client_instance_id: string;
+          status?: EntryDraftStatus;
+          published_entry_id?: string | null;
+          published_at?: string | null;
+          discarded_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          payload?: Json | null;
+          tag_input?: string;
+          revision?: number;
+          client_instance_id?: string;
+          status?: EntryDraftStatus;
+          published_entry_id?: string | null;
+          published_at?: string | null;
+          discarded_at?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "entry_drafts_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "entry_drafts_source_entry_id_fkey";
+            columns: ["source_entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      account_deletion_requests: {
+        Row: {
+          id: string;
+          user_id: string;
+          deletion_mode: AccountDeletionMode;
+          status: AccountDeletionStatus;
+          requested_at: string;
+          processing_started_at: string | null;
+          completed_at: string | null;
+          failure_code: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          deletion_mode: AccountDeletionMode;
+          status?: AccountDeletionStatus;
+          requested_at?: string;
+          processing_started_at?: string | null;
+          completed_at?: string | null;
+          failure_code?: string | null;
+        };
+        Update: {
+          status?: AccountDeletionStatus;
+          processing_started_at?: string | null;
+          completed_at?: string | null;
+          failure_code?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "account_deletion_requests_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
         ];
@@ -573,7 +708,7 @@ export type Database = {
       reports: {
         Row: {
           id: string;
-          reporter_id: string;
+          reporter_id: string | null;
           target_type: ReportTargetType;
           target_id: string;
           reason: ReportReason;
@@ -586,7 +721,7 @@ export type Database = {
         };
         Insert: {
           id?: string;
-          reporter_id: string;
+          reporter_id?: string | null;
           target_type: ReportTargetType;
           target_id: string;
           reason: ReportReason;
@@ -924,6 +1059,46 @@ export type Database = {
         };
         Returns: Json;
       };
+      save_entry_draft: {
+        Args: {
+          p_draft_id: string | null;
+          p_source_entry_id: string | null;
+          p_payload: Json;
+          p_tag_input: string;
+          p_expected_revision: number;
+          p_client_instance_id: string;
+        };
+        Returns: Database["public"]["Tables"]["entry_drafts"]["Row"];
+      };
+      get_account_deletion_impact: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      begin_account_deletion: {
+        Args: { p_deletion_mode: AccountDeletionMode };
+        Returns: string;
+      };
+      finalize_account_deletion: {
+        Args: { p_request_id: string; p_user_id: string };
+        Returns: undefined;
+      };
+      export_my_story_data: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      publish_entry_draft: {
+        Args: {
+          p_draft_id: string;
+          p_expected_revision: number;
+          p_entry: Json;
+          p_tag_names?: string[];
+        };
+        Returns: Json;
+      };
+      discard_entry_draft: {
+        Args: { p_draft_id: string };
+        Returns: undefined;
+      };
       set_entry_tags: {
         Args: { p_entry_id: string; p_tag_names: string[] };
         Returns: undefined;
@@ -1000,6 +1175,21 @@ export type Database = {
         };
         Returns: MapEntry[];
       };
+      search_story_and_place: {
+        Args: {
+          p_query?: string | null;
+          p_start_year?: number | null;
+          p_end_year?: number | null;
+          p_place?: string | null;
+          p_tag?: string | null;
+          p_emotion?: string | null;
+          p_author_id?: string | null;
+          p_content_types?: GlobalSearchResultType[] | null;
+          p_offset?: number;
+          p_limit?: number;
+        };
+        Returns: GlobalSearchResult[];
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
@@ -1010,6 +1200,8 @@ export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
 export type MapEntry = Database["public"]["Tables"]["map_entries"]["Row"];
 export type MapEntryInsert = Database["public"]["Tables"]["map_entries"]["Insert"];
 export type MapEntryUpdate = Database["public"]["Tables"]["map_entries"]["Update"];
+export type EntryDraft = Database["public"]["Tables"]["entry_drafts"]["Row"];
+export type AccountDeletionRequest = Database["public"]["Tables"]["account_deletion_requests"]["Row"];
 export type PlaceCategory = Database["public"]["Tables"]["place_categories"]["Row"];
 export type Group = Database["public"]["Tables"]["groups"]["Row"];
 export type GroupMember = Database["public"]["Tables"]["group_members"]["Row"];

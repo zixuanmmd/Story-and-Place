@@ -53,6 +53,13 @@ select pg_temp.assert_true(
   'current user must be able to retain their own normalized display name'
 );
 
+-- Switch to the second user before testing the database-level race boundary.
+-- Updating another profile as user A is correctly filtered to zero rows by
+-- RLS and therefore cannot exercise the unique index.
+reset role;
+set local role authenticated;
+set local request.jwt.claim.sub = '71000000-0000-4000-8000-000000000002';
+
 do $$
 begin
   begin

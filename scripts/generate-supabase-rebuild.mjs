@@ -27,6 +27,12 @@ const migrationNames = [
   "202608050005_launch_explore_acl_fix.sql",
   "202608050006_launch_explore_keyword_lenses.sql",
   "202608070001_launch_featured_entries.sql",
+  "202608080001_v13_global_search.sql",
+  "202608080002_v13_entry_drafts.sql",
+  "202608080003_v13_data_portability_account_deletion.sql",
+  "202608110001_v13_global_search_escape_fix.sql",
+  "202608110002_trigger_function_execute_hardening.sql",
+  "20260811111243_timeline_participant_acl_fix.sql",
 ];
 const outputPath = resolve(
   projectRoot,
@@ -159,6 +165,8 @@ select
   to_regclass('public.story_routes') is not null as story_routes_ready,
   to_regclass('public.entry_participants') is not null as entry_participants_ready,
   to_regclass('public.tags') is not null as tags_ready,
+  to_regclass('public.entry_drafts') is not null as entry_drafts_ready,
+  to_regclass('public.account_deletion_requests') is not null as account_deletion_requests_ready,
   (
     select count(*)::integer
     from public.profiles

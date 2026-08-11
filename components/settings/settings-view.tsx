@@ -17,6 +17,7 @@ import {
   normalizeDisplayNameForStorage,
 } from "@/lib/profile/display-name";
 import { profileSchema, type ProfileFormValues } from "@/lib/validation/profile";
+import { DataPortabilityPanel } from "@/components/settings/data-portability-panel";
 
 export function SettingsView() {
   const { user, profile, loading, configured, refreshProfile } = useAuth();
@@ -78,6 +79,7 @@ export function SettingsView() {
   else if (!user) content = <ProtectedState kind="signed-out" nextPath="/settings" signedOutDescription="登录后可以修改显示名、简介和头像地址。" />;
   else {
     content = (
+      <>
       <section className="settings-card">
         <div className="profile-preview">
           {avatarUrl ? (
@@ -97,6 +99,8 @@ export function SettingsView() {
           <div className="form-actions"><button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting ? "正在保存…" : "保存设置"}</button></div>
         </form>
       </section>
+      <DataPortabilityPanel />
+      </>
     );
   }
 

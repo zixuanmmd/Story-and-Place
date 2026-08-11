@@ -4,6 +4,7 @@ import { resolveServerSiteUrl } from "@/lib/config/site-url";
 import "./globals.css";
 import "./error-states.css";
 import "./timeline-routes.css";
+import "./search-share.css";
 
 export const metadata: Metadata = {
   metadataBase: resolveServerSiteUrl({

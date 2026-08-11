@@ -21,6 +21,7 @@ import {
   type MineSort,
 } from "@/lib/data/my-records";
 import type { MapEntryWithProfile } from "@/types/database";
+import type { EntryDraft } from "@/types/database";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
@@ -28,6 +29,8 @@ import {
   ENTRY_AUDIENCE_PRESENTATION,
   getEntryAudienceActionLabel,
 } from "@/lib/privacy/presentation";
+import { discardEntryDraft, listEntryDrafts } from "@/lib/data/entry-drafts";
+import { getEntryDraftLabel } from "@/lib/validation/entry-draft";
 
 export function MyRecordsView() {
   const { user, loading: authLoading, configured } = useAuth();
@@ -63,6 +66,9 @@ function MyRecordsForScope({
   const [sort, setSort] = useState<MineSort>("updated");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<MapEntryWithProfile | null>(null);
+  const [drafts, setDrafts] = useState<EntryDraft[]>([]);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [discardTarget, setDiscardTarget] = useState<EntryDraft | null>(null);
   const [revokedGroupIds, setRevokedGroupIds] = useState<string[]>([]);
 
   const loadMine = useCallback(
@@ -85,6 +91,32 @@ function MyRecordsForScope({
     includeCollaboration: true,
     onChange: reloadEntries,
   });
+
+  const reloadDrafts = useCallback(async () => {
+    if (!user || !configured) return;
+    try {
+      setDraftError(null);
+      setDrafts(await listEntryDrafts());
+    } catch (draftLoadError) {
+      setDrafts([]);
+      setDraftError(getFriendlyError(draftLoadError, "草稿加载失败，请稍后重试。"));
+    }
+  }, [configured, user]);
+
+  useEffect(() => {
+    if (!user || !configured) return;
+    let active = true;
+    void listEntryDrafts().then((nextDrafts) => {
+      if (!active) return;
+      setDraftError(null);
+      setDrafts(nextDrafts);
+    }).catch((draftLoadError) => {
+      if (!active) return;
+      setDrafts([]);
+      setDraftError(getFriendlyError(draftLoadError, "草稿加载失败，请稍后重试。"));
+    });
+    return () => { active = false; };
+  }, [configured, user]);
 
   useEffect(() => {
     if (!user || !configured) return;
@@ -164,6 +196,21 @@ function MyRecordsForScope({
     }
   };
 
+  const discard = async () => {
+    if (!discardTarget) return;
+    setBusyId(discardTarget.id);
+    try {
+      await discardEntryDraft(discardTarget.id);
+      setDrafts((current) => current.filter((draft) => draft.id !== discardTarget.id));
+      setDiscardTarget(null);
+      setStatus("草稿已删除。");
+    } catch (discardError) {
+      setStatus(getFriendlyError(discardError, "草稿删除失败，请稍后重试。"));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   let content;
   if (!configured) content = <ProtectedState kind="config" />;
   else if (authLoading) content = <ProtectedState kind="loading" />;
@@ -171,6 +218,29 @@ function MyRecordsForScope({
   else {
     content = (
       <>
+        <section className="draft-records" aria-labelledby="draft-records-title">
+          <div className="section-heading-row">
+            <div><p className="eyebrow">UNPUBLISHED</p><h2 id="draft-records-title">未发布草稿</h2></div>
+            {draftError ? <button className="text-button" type="button" onClick={() => void reloadDrafts()}>重试</button> : null}
+          </div>
+          {draftError ? <div className="inline-error" role="alert">{draftError}</div> : null}
+          {!draftError && drafts.length ? (
+            <div className="draft-records-list">
+              {drafts.map((draft) => {
+                const resumeHref = draft.source_entry_id
+                  ? `/?entry=${draft.source_entry_id}&edit=1&draft=${draft.id}`
+                  : `/?draft=${draft.id}`;
+                return (
+                  <article className="draft-record-card" key={draft.id}>
+                    <div><span className="visibility-badge">草稿</span><h3>{getEntryDraftLabel(draft)}</h3><time>{new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(draft.updated_at))} 自动保存</time></div>
+                    <div className="record-actions"><Link className="secondary-button nav-link" href={resumeHref}>继续写作</Link><button className="text-danger-button" type="button" disabled={busyId === draft.id} onClick={() => setDiscardTarget(draft)}>删除草稿</button></div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : !draftError ? <p className="field-meta">还没有未发布草稿。开始写作后，内容会自动保存在这里。</p> : null}
+        </section>
+
         <section className="records-toolbar" aria-label="记录筛选与排序">
           <label className="search-box">
             <span aria-hidden="true">⌕</span>
@@ -220,6 +290,7 @@ function MyRecordsForScope({
         {content}
       </div>
       <ConfirmDialog open={Boolean(deleteTarget)} title="删除这条记录？" description="删除后无法恢复，并会立即从地图中移除。" busy={Boolean(busyId)} onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove()} />
+      <ConfirmDialog open={Boolean(discardTarget)} title="删除这份草稿？" description="未发布内容将被清除且无法恢复，已经发布的原故事不受影响。" busy={Boolean(busyId)} onCancel={() => setDiscardTarget(null)} onConfirm={() => void discard()} />
     </main>
   );
 }

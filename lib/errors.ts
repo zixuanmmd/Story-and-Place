@@ -19,6 +19,7 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   "23514": "提交的数据不符合要求，请检查后重试。",
   "23503": "关联的内容不存在，或已经失效。",
   "22023": "提交的时间或时区无效，请检查后重试。",
+  "40001": "内容已在另一个页面更新，请重新打开后继续。",
   "42501": "你没有权限执行这个操作。",
   "55000": "当前状态不允许这个操作，请刷新后重试。",
   P0002: "内容不存在，或你已经没有访问权限。",
@@ -116,6 +117,9 @@ export function getFriendlyError(
   if (message.includes("invitation expired")) return "邀请已过期，请联系群组管理员重新邀请。";
   if (message.includes("invitation already handled")) return "邀请已经处理过了。";
   if (message.includes("owner must transfer")) return "群主需要先转移群主身份，才能退出群组。";
+  if (message.includes("group responsibilities must be resolved")) {
+    return "请先转移群主、退出管理员角色或归档相关群组，再删除账号。";
+  }
   if (message.includes("group is archived") || message.includes("group is unavailable")) {
     return "群组已归档，不能继续执行这个操作。";
   }

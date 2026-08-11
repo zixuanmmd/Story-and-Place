@@ -30,7 +30,7 @@ export function ExploreStoryCard({
       </div>
       <footer>
         <span>{featured ? "✦ 精选公开故事" : "🌍 所有人可见"}</span>
-        <Link href={`/?entry=${entry.id}`}>在地图中阅读</Link>
+        <span className="explore-card-links"><Link href={`/entries/${entry.id}`}>阅读故事</Link><Link href={`/?entry=${entry.id}`}>地图定位</Link></span>
       </footer>
     </article>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import {
   entryFormSchema,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/validation/entry";
 import type {
   EntryEditableField,
+  EntryDraft,
   MapEntryWithProfile,
 } from "@/types/database";
 import type { Coordinates } from "@/types/map";
@@ -35,14 +36,23 @@ import {
   type StoryTemplateId,
 } from "@/lib/templates/story-templates";
 import { ENTRY_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
+import { createEntryDraftPayload } from "@/lib/validation/entry-draft";
+import { useEntryAutosave } from "@/hooks/use-entry-autosave";
+import type { EntryDraftRef } from "@/lib/data/entry-drafts";
 
 type EntryFormProps = {
   mode: "create" | "edit";
   coordinates?: Coordinates;
   initialValues?: EntryFormValues;
+  initialDraft?: EntryDraft;
   entry?: MapEntryWithProfile;
-  onSave: (values: EntryFormValues, tagNames: string[]) => Promise<void>;
+  onSave: (
+    values: EntryFormValues,
+    tagNames: string[],
+    draft: EntryDraftRef | null,
+  ) => Promise<void>;
   onCancel: () => void;
+  onDraftCreated?: (id: string) => void;
   initialGroupId?: string;
   initialTemplateId?: StoryTemplateId | null;
   isOwner?: boolean;
@@ -56,8 +66,9 @@ function getDefaults(
   initialGroupId?: string,
   initialTemplateId?: StoryTemplateId | null,
 ): EntryFormValues {
+  if (initialValues) return initialValues;
   if (entry) return entryToFormValues(entry);
-  const defaults = initialValues ?? {
+  const defaults: EntryFormValues = {
     title: "",
     content: "",
     place_name: "",
@@ -79,9 +90,11 @@ export function EntryForm({
   mode,
   coordinates,
   initialValues,
+  initialDraft,
   entry,
   onSave,
   onCancel,
+  onDraftCreated,
   initialGroupId,
   initialTemplateId = null,
   isOwner = true,
@@ -102,11 +115,14 @@ export function EntryForm({
   const contentValue = useWatch({ control: form.control, name: "content" });
   const visibility = useWatch({ control: form.control, name: "visibility" });
   const category = useWatch({ control: form.control, name: "place_category_slug" });
+  const watchedValues = useWatch({ control: form.control });
   const { user } = useAuth();
   const [groupChoices, setGroupChoices] = useState<Group[]>([]);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState(() =>
-    entry
+    initialDraft
+      ? initialDraft.tag_input
+      : entry
       ? formatEntryTagInput(entry)
       : addTemplateTag("", mode === "create" ? initialTemplateId : null),
   );
@@ -116,6 +132,19 @@ export function EntryForm({
     formatUnlockAtForInput(new Date().toISOString()),
   );
   const [tagError, setTagError] = useState<string | null>(null);
+  const draftPayload = useMemo(
+    () => createEntryDraftPayload(watchedValues as EntryFormValues),
+    [watchedValues],
+  );
+  const autosaveEnabled = Boolean(user) && (mode === "create" || isOwner);
+  const autosave = useEntryAutosave({
+    enabled: autosaveEnabled,
+    sourceEntryId: mode === "edit" ? entry?.id ?? null : null,
+    payload: draftPayload,
+    tagInput,
+    initialDraft,
+    onDraftCreated,
+  });
   const canEdit = (field: EntryEditableField) =>
     mode === "create" || isOwner || editableFields?.includes(field);
   const selectTemplate = (templateId: StoryTemplateId | null) => {
@@ -158,7 +187,16 @@ export function EntryForm({
       setTagError(result.error.issues[0]?.message ?? "标签格式无效。");
       return;
     }
-    await onSave(values, result.data);
+    try {
+      const draft = await autosave.flush();
+      await onSave(values, result.data, draft);
+    } catch {
+      setTagError(autosave.message ?? "草稿尚未安全保存，请稍后重试。");
+    }
+  };
+
+  const cancel = () => {
+    void autosave.flush().catch(() => undefined).then(onCancel);
   };
 
   useEffect(() => {
@@ -210,7 +248,7 @@ export function EntryForm({
           <p className="eyebrow">{mode === "create" ? "新建记录" : "编辑记录"}</p>
           <h2>{mode === "create" ? "这里发生过什么？" : "修改这段故事"}</h2>
         </div>
-        <button className="icon-button" type="button" onClick={onCancel} aria-label="关闭表单">
+        <button className="icon-button" type="button" onClick={cancel} aria-label="关闭表单">
           ×
         </button>
       </div>
@@ -429,7 +467,21 @@ export function EntryForm({
       ) : null}
 
       <div className="form-actions">
-        <button className="secondary-button" type="button" onClick={onCancel}>
+        <div className={`draft-save-state draft-save-state--${autosave.status}`} role="status">
+          {autosaveEnabled
+            ? autosave.message ?? ({
+                idle: "尚未保存草稿",
+                pending: "等待自动保存…",
+                saving: "正在保存草稿…",
+                saved: "草稿已保存",
+                error: "草稿保存失败",
+                conflict: "草稿存在编辑冲突",
+              }[autosave.status])
+            : mode === "edit" && !isOwner
+              ? "共同经历者的修改将在提交时保存，不生成个人草稿。"
+              : null}
+        </div>
+        <button className="secondary-button" type="button" onClick={cancel}>
           取消
         </button>
         <button

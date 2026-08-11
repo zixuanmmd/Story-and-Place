@@ -9,6 +9,10 @@ describe("getSafeRedirectPath", () => {
     ["/my-records", "/my-records"],
     ["/settings", "/settings"],
     ["/?restoreDraft=1", "/?restoreDraft=1"],
+    [
+      "/?draft=0ea21e54-763a-4bbf-a72d-a7600046f921",
+      "/?draft=0ea21e54-763a-4bbf-a72d-a7600046f921",
+    ],
     ["/groups", "/groups"],
     ["/groups/new", "/groups/new"],
     ["/groups/invitations", "/groups/invitations"],
@@ -26,6 +30,15 @@ describe("getSafeRedirectPath", () => {
     ["/users/zixuan-story/timeline", "/users/zixuan-story/timeline"],
     ["/feed", "/feed"],
     ["/explore", "/explore"],
+    ["/search", "/search"],
+    [
+      "/search?q=%E6%88%90%E9%83%BD&from=2010&to=2020&types=entry%2Croute",
+      "/search?q=%E6%88%90%E9%83%BD&from=2010&to=2020&types=entry,route",
+    ],
+    [
+      "/entries/0ea21e54-763a-4bbf-a72d-a7600046f921",
+      "/entries/0ea21e54-763a-4bbf-a72d-a7600046f921",
+    ],
     ["/timeline", "/timeline"],
     ["/entry-invitations", "/entry-invitations"],
     ["/tags", "/tags"],
@@ -63,6 +76,10 @@ describe("getSafeRedirectPath", () => {
       "/?entry=0ea21e54-763a-4bbf-a72d-a7600046f921&edit=1",
     ],
     [
+      "/?entry=0ea21e54-763a-4bbf-a72d-a7600046f921&edit=1&draft=41000000-0000-4000-8000-000000000001",
+      "/?entry=0ea21e54-763a-4bbf-a72d-a7600046f921&edit=1&draft=41000000-0000-4000-8000-000000000001",
+    ],
+    [
       "/?group=41000000-0000-4000-8000-000000000001",
       "/?group=41000000-0000-4000-8000-000000000001",
     ],
@@ -80,6 +97,10 @@ describe("getSafeRedirectPath", () => {
     "/my-records%0Aevil",
     "/settings?next=https://evil.example",
     "/not-allowed",
+    "/entries/not-a-uuid",
+    "/search?q=x",
+    "/search?q=%E6%88%90%E9%83%BD&next=https://evil.example",
+    "/search?types=entry,unknown",
     "/groups/UPPERCASE",
     "/groups/story-circle/unknown",
     "/users/-invalid-handle",
@@ -97,6 +118,8 @@ describe("getSafeRedirectPath", () => {
     "/?onboarding=1&template=travel&next=https://evil.example",
     "/?entry=not-a-uuid",
     "/?group=not-a-uuid",
+    "/?draft=not-a-uuid",
+    "/?draft=0ea21e54-763a-4bbf-a72d-a7600046f921&next=https://evil.example",
     "/?entry=0ea21e54-763a-4bbf-a72d-a7600046f921&next=https://evil.example",
   ])("拒绝恶意或不在白名单内的路径 %s", (candidate) => {
     expect(getSafeRedirectPath(candidate, ORIGIN)).toBe("/");

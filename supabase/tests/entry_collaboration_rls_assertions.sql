@@ -240,6 +240,10 @@ reset role;
 set local role anon;
 select set_config('request.jwt.claims', '{}', true);
 select pg_temp.assert_true(
+  (select count(*) from public.entry_participants) = 0,
+  'anonymous users must not read participant relationships directly'
+);
+select pg_temp.assert_true(
   exists (
     select 1 from public.tags
     where normalized_name = '公开标签'
@@ -324,13 +328,14 @@ end;
 $$;
 
 reset role;
-set local role authenticated;
 select set_config(
   'request.jwt.claims',
   '{"sub":"81000000-0000-4000-8000-000000000001","role":"authenticated"}',
   true
 );
 
+-- Test fixture setup runs as the database owner. Ordinary authenticated clients
+-- intentionally cannot INSERT map_entries directly and must use create_entry RPCs.
 insert into public.map_entries (
   id, user_id, title, content, latitude, longitude,
   occurred_year, time_precision, time_label, visibility, group_id
@@ -347,6 +352,8 @@ insert into public.map_entries (
   'group',
   '84000000-0000-4000-8000-000000000004'
 );
+
+set local role authenticated;
 
 do $$
 begin
