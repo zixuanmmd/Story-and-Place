@@ -16,8 +16,10 @@ import {
 } from "@/lib/data/account-deletion";
 import { getFriendlyError, reportOperationalError } from "@/lib/errors";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { recordMyExportCompleted } from "@/lib/data/notifications";
 import type { AccountDeletionMode } from "@/types/database";
 import type { AccountDeletionImpact } from "@/lib/validation/data-portability";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 type ExportFormat = "json" | "csv" | "geojson";
 
@@ -43,6 +45,7 @@ export function DataPortabilityPanel() {
   const download = async (format: ExportFormat) => {
     setBusyExport(format);
     setExportNotice(null);
+    recordProductEvent("export_started", { source: "settings", format });
     try {
       const data = await exportMyStoryData();
       if (format === "json") {
@@ -52,6 +55,12 @@ export function DataPortabilityPanel() {
       } else {
         downloadTextFile(exportFilename("geojson"), JSON.stringify(storyDataToGeoJson(data), null, 2), "application/geo+json;charset=utf-8");
       }
+      try {
+        await recordMyExportCompleted(format);
+      } catch (notificationError) {
+        reportOperationalError(notificationError, "data-export:notification");
+      }
+      recordProductEvent("export_completed", { source: "settings", format });
       const collaborationCount = data.participant_entries.length;
       setExportNotice(
         `已导出 ${allExportedEntries(data).length} 条可读故事${collaborationCount ? `，其中 ${collaborationCount} 条为共同经历内容` : ""}。`,

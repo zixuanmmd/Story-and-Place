@@ -35,6 +35,15 @@ const migrationNames = [
   "202608110001_v13_global_search_escape_fix.sql",
   "202608110002_trigger_function_execute_hardening.sql",
   "20260811111243_timeline_participant_acl_fix.sql",
+  "202608270001_v14_security_reliability.sql",
+  "202608280001_v14_notifications.sql",
+  "202608280002_v14_story_media.sql",
+  "20260828102358_v14_rate_limit_clock_fix.sql",
+  "20260828102558_v14_rate_limit_builtin_fix.sql",
+  "202608290001_v14_governance.sql",
+  "202608290002_v14_product_analytics.sql",
+  "202608290003_v14_commercial_foundation.sql",
+  "202608290004_v14_product_completeness.sql",
 ];
 
 describe("Supabase 完整重建 Query", () => {
@@ -79,6 +88,17 @@ describe("Supabase 完整重建 Query", () => {
       "public.tags",
       "public.entry_drafts",
       "public.account_deletion_requests",
+      "public.entry_media_assets",
+      "public.media_cleanup_queue",
+      "public.app_admins",
+      "public.moderation_audit_logs",
+      "public.product_events",
+      "public.plans",
+      "public.plan_entitlements",
+      "public.user_subscriptions",
+      "public.product_feedback",
+      "public.feature_flags",
+      "public.feature_flag_overrides",
     ]) {
       expect(rebuildQuery).toContain(`to_regclass('${relation}')`);
     }

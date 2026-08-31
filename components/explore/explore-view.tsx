@@ -22,6 +22,7 @@ import {
 import { getFriendlyError, reportOperationalError } from "@/lib/errors";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 import type { MapEntryWithProfile } from "@/types/database";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 export function ExploreView() {
   const { dataScope } = useAuth();
@@ -42,6 +43,13 @@ function ExploreForScope() {
   const cursorRef = useRef<ExploreCursor | null>(null);
   const requestSequence = useRef(0);
   const featuredRequestSequence = useRef(0);
+  const trackedOpen = useRef(false);
+
+  useEffect(() => {
+    if (!configured || authLoading || trackedOpen.current) return;
+    trackedOpen.current = true;
+    recordProductEvent("explore_opened", { source: "explore-page" });
+  }, [authLoading, configured]);
 
   const load = useCallback(async (append = false) => {
     if (!configured || authLoading) return;

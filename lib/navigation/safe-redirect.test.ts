@@ -8,6 +8,8 @@ describe("getSafeRedirectPath", () => {
     ["/", "/"],
     ["/my-records", "/my-records"],
     ["/settings", "/settings"],
+    ["/settings/notifications", "/settings/notifications"],
+    ["/notifications", "/notifications"],
     ["/?restoreDraft=1", "/?restoreDraft=1"],
     [
       "/?draft=0ea21e54-763a-4bbf-a72d-a7600046f921",

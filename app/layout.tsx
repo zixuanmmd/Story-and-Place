@@ -5,6 +5,7 @@ import "./globals.css";
 import "./error-states.css";
 import "./timeline-routes.css";
 import "./search-share.css";
+import "./admin.css";
 
 export const metadata: Metadata = {
   metadataBase: resolveServerSiteUrl({

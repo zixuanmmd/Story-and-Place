@@ -27,6 +27,7 @@ import type { Group, MapEntryWithProfile } from "@/types/database";
 import type { StoryRouteItemWithEntry } from "@/types/database";
 import { ROUTE_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
 import { moveRouteItem, sortRouteItems } from "@/lib/routes/ordering";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const BuilderRouteMap = dynamic(
   () => import("./story-route-map").then((module) => module.StoryRouteMap),
@@ -201,6 +202,13 @@ function StoryRouteBuilderForScope({ shareSlug }: { shareSlug?: string }) {
     setStatus(null);
     try {
       const routeId = await saveStoryRoute(values);
+      if (!shareSlug) {
+        recordProductEvent("route_created", {
+          source: "route-builder",
+          content_type: "route",
+          visibility: values.visibility,
+        });
+      }
       router.push(`/routes?created=${encodeURIComponent(routeId)}`);
     } catch (error) {
       setStatus(getFriendlyError(error, "路线保存失败，请检查节点权限后重试。"));

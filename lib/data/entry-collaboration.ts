@@ -6,6 +6,7 @@ import type {
   MapEntry,
   Profile,
 } from "@/types/database";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 export const ENTRY_EDITABLE_FIELD_LABELS: Record<EntryEditableField, string> = {
   title: "标题",
@@ -114,6 +115,7 @@ export async function inviteEntryParticipant(
     },
   );
   if (error) throw error;
+  recordProductEvent("invitation_sent", { source: "entry-participants", invitation_type: "entry" });
 }
 
 export async function respondEntryParticipantInvitation(
@@ -125,6 +127,9 @@ export async function respondEntryParticipantInvitation(
     { p_entry_id: entryId, p_accept: accept },
   );
   if (error) throw error;
+  if (accept) {
+    recordProductEvent("invitation_accepted", { source: "entry-invitations", invitation_type: "entry" });
+  }
 }
 
 export async function revokeEntryParticipant(

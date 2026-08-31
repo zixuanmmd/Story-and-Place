@@ -57,6 +57,15 @@ npm start
    - `supabase/migrations/202608110001_v13_global_search_escape_fix.sql`
    - `supabase/migrations/202608110002_trigger_function_execute_hardening.sql`
    - `supabase/migrations/20260811111243_timeline_participant_acl_fix.sql`
+   - `supabase/migrations/202608270001_v14_security_reliability.sql`
+   - `supabase/migrations/202608280001_v14_notifications.sql`
+   - `supabase/migrations/202608280002_v14_story_media.sql`
+   - `supabase/migrations/20260828102358_v14_rate_limit_clock_fix.sql`
+   - `supabase/migrations/20260828102558_v14_rate_limit_builtin_fix.sql`
+   - `supabase/migrations/202608290001_v14_governance.sql`
+   - `supabase/migrations/202608290002_v14_product_analytics.sql`
+   - `supabase/migrations/202608290003_v14_commercial_foundation.sql`
+   - `supabase/migrations/202608290004_v14_product_completeness.sql`
 3. 在开发期按需配置邮箱确认和 `http://localhost:3000` 回调地址。
 4. 从项目 API 设置复制 Project URL 与 anon/publishable key。
 
@@ -67,7 +76,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase db push
 ```
 
-第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。第九、十份 migration 加固记录 RPC 的群组资格与辅助函数执行权限。第十一份 migration 增加 v1.1 的标签类型、时间胶囊解锁时间和路线节点关系字段，但不提前开放写权限。第十二份 migration 激活类型化标签聚合和公共情绪故事，并安全提升七个预设情绪标签。第十三份 migration 激活时间胶囊的 owner-only 锁定、受控写入、时间线筛选、信息流保护和路线隐私降级。第十四份 migration 为公开资料增加稳定用户名，并提供只基于“已解锁公开故事”的人生轨迹与聚合查询。第十五份 migration 新增仅本人可读的首次使用偏好、跳过状态与完成 RPC，不把兴趣写入公开 profiles。第十六份 migration 新增公开探索的复合游标查询，只返回已解锁的 `public` 故事，并在数据库分页前按受控标签词表分类；第十七份 migration 修复匿名 Explore 不应依赖内部标签规范化函数的 ACL 问题；第十八份 migration 让受控主题分类识别 `#成都科幻`、`#文学空间` 等复合标签，但仍不扫描正文；第十九份 migration 新增由可信运营端维护的故事精选时间，并提供只返回已解锁公开故事的精选 RPC；第二十份 migration 新增权限安全的全局搜索 RPC 和中英文模糊检索索引，所有故事、路线、标签数量都先经过当前用户权限与时间胶囊解锁检查；第二十一份 migration 新增仅创建者可读的服务端草稿、乐观版本控制及原子发布 RPC；第二十二份 migration 新增权限安全的数据导出、账号删除影响预览、删除请求状态与 service-role-only 数据清理函数；第二十三份 migration 修复全局搜索 LIKE 转义字符在 PostgreSQL 中被解析为两个字符而导致 `22025` 的运行时错误，不改变结果结构或权限语义；第二十四份 migration 撤销两个内部触发器函数对 API 角色的默认执行权，触发器继续正常运行；第二十五份 migration 为匿名时间线查询补齐 `entry_participants` 的表级 `SELECT` ACL，但该表仍启用 RLS 且没有匿名读取策略，因此匿名直接查询始终为零行，参与关系不会公开。旧记录不会在 migration 执行时被删除；只有用户完成密码复核并明确确认删除后才会处理其数据。
+第二份 migration 是向后兼容的时间与写权限升级。第三份 migration 新增群组、成员、邀请、关注、点赞、评论、举报和 12 个稳定地点分类，并把记录可见性扩展为 `group`。第四份 migration 增加昵称规范化唯一索引、可用性 RPC、注册触发器升级和 PostgREST schema cache 刷新。第五份 migration 新增时间线安全查询、故事路线、路线节点、分享权限和自动隐私降级保护。第六、七份 migration 加固群主不变量和群组创建后的读取策略。第八份 migration 新增共同经历邀请、字段级受控编辑、数据库编辑日志、自由标签、权限安全的标签聚合和相应 Realtime publication。第九、十份 migration 加固记录 RPC 的群组资格与辅助函数执行权限。第十一份 migration 增加 v1.1 的标签类型、时间胶囊解锁时间和路线节点关系字段，但不提前开放写权限。第十二份 migration 激活类型化标签聚合和公共情绪故事，并安全提升七个预设情绪标签。第十三份 migration 激活时间胶囊的 owner-only 锁定、受控写入、时间线筛选、信息流保护和路线隐私降级。第十四份 migration 为公开资料增加稳定用户名，并提供只基于“已解锁公开故事”的人生轨迹与聚合查询。第十五份 migration 新增仅本人可读的首次使用偏好、跳过状态与完成 RPC，不把兴趣写入公开 profiles。第十六份 migration 新增公开探索的复合游标查询，只返回已解锁的 `public` 故事，并在数据库分页前按受控标签词表分类；第十七份 migration 修复匿名 Explore 不应依赖内部标签规范化函数的 ACL 问题；第十八份 migration 让受控主题分类识别 `#成都科幻`、`#文学空间` 等复合标签，但仍不扫描正文；第十九份 migration 新增由可信运营端维护的故事精选时间，并提供只返回已解锁公开故事的精选 RPC；第二十份 migration 新增权限安全的全局搜索 RPC 和中英文模糊检索索引，所有故事、路线、标签数量都先经过当前用户权限与时间胶囊解锁检查；第二十一份 migration 新增仅创建者可读的服务端草稿、乐观版本控制及原子发布 RPC；第二十二份 migration 新增权限安全的数据导出、账号删除影响预览、删除请求状态与 service-role-only 数据清理函数；第二十三份 migration 修复全局搜索 LIKE 转义字符在 PostgreSQL 中被解析为两个字符而导致 `22025` 的运行时错误，不改变结果结构或权限语义；第二十四份 migration 撤销两个内部触发器函数对 API 角色的默认执行权，触发器继续正常运行；第二十五份 migration 为匿名时间线查询补齐 `entry_participants` 的表级 `SELECT` ACL，但该表仍启用 RLS 且没有匿名读取策略，因此匿名直接查询始终为零行，参与关系不会公开。第二十六份 migration 新增服务端持久化限流。第二十七份 migration 新增本人专属通知、通知偏好、邮件 outbox、事件触发器与时间胶囊同步 RPC。旧记录不会在 migration 执行时被删除；只有用户完成密码复核并明确确认删除后才会处理其数据。
 
 ## 新增页面
 
@@ -89,6 +98,12 @@ supabase db push
 - `/onboarding`：首次登录欢迎与可跳过的兴趣选择。
 - `/search`：统一搜索地点故事、用户、标签、情绪与故事路线，可组合年份、地点、作者与内容类型筛选，并在列表和地图间切换。
 - `/entries/[id]`：每条有权读取的故事的稳定独立地址。公开且已解锁故事生成标题、摘要、canonical 和 Open Graph；其他内容的服务端 metadata 始终使用不含故事信息的安全文案。
+- `/notifications`：分页读取当前账户自己的站内通知，支持逐条和全部标记为已读。
+- `/settings/notifications`：按协作、群组、时间胶囊、安全和产品更新设置接收方式。
+- `/settings/usage`：查看 entitlement 驱动的套餐能力和真实资源使用量。
+- `/help`：静态帮助中心；解释 Story、Story Route、时间胶囊、隐私、共同经历、群组、导出与账号删除。
+- `/terms`、`/privacy`、`/community-guidelines`：明确标记为待法律审阅的产品草案。
+- `/status`：只展示 Web App、Database 与 Media 的当前健康状态。
 
 权限选择界面使用面向用户的阅读范围描述，而不是数据库枚举：地点故事区分“我和受邀共同经历者”“所属群组成员”“所有人”；故事路线区分“只有我”“所属群组成员”“所有人”；群组创建则说明“任何人都能发现”或“仅受邀的人”。这些文案不会改变底层 `private`、`group`、`public` 值与既有 RLS，数据库仍是最终权限边界。
 - `/onboarding/complete`：第一个故事完成反馈和下一步入口。
@@ -102,11 +117,25 @@ supabase db push
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY
 # 旧 Supabase 项目也可以改用：NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_ANON_KEY
+NEXT_PUBLIC_APP_VERSION=
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
 NEXT_PUBLIC_REQUIRE_EMAIL_CONFIRMATION=true
+# 仅服务端：账号删除、持久化限流和后续受控运维接口。
+SUPABASE_SERVICE_ROLE_KEY=
+# 仅服务端：至少 32 字节随机值，用于 HMAC 匿名化限流标识符。
+RATE_LIMIT_SECRET=
 ```
 
 Publishable key 与 legacy anon key 二选一即可；项目优先读取 publishable key。不要提交 `.env.local`，也不要在浏览器端加入 Supabase `service_role` key。`NEXT_PUBLIC_SITE_URL` 部署后应改为正式站点 origin。
+
+变量按暴露范围划分：
+
+- Public / required：`NEXT_PUBLIC_SUPABASE_URL`、一个浏览器可用 key、`NEXT_PUBLIC_SITE_URL`。
+- Public / optional：`NEXT_PUBLIC_REQUIRE_EMAIL_CONFIRMATION`，缺失时安全默认值为 `true`。
+- Server-only / required for protected operations：`SUPABASE_SERVICE_ROLE_KEY`、`RATE_LIMIT_SECRET`、`MEDIA_CLEANUP_SECRET`、`CRON_SECRET`。这些变量都不得使用 `NEXT_PUBLIC_` 前缀；Development、Preview、Production 应使用不同值，媒体清理、Cron 与限流密钥还应彼此独立。
+- Platform-provided：`VERCEL_GIT_COMMIT_SHA` 仅用于健康检查显示短版本号，不由应用保存。
+
+生成限流密钥时使用密码管理器或系统安全随机源，不要与 Supabase key、用户密码或 JWT secret 复用。新增服务端变量后需要重新部署相应环境，不能依赖旧实例自动读取。
 
 ## 测试环境免邮箱验证
 
@@ -133,6 +162,20 @@ Publishable key 与 legacy anon key 二选一即可；项目优先读取 publish
 关闭确认开关不会保证已有的未确认账户自动变为已确认，也不要为此自动删除现有用户。旧测试账户仍无法登录时，应在 Supabase Dashboard 中人工检查该账户的确认状态，或换一个新的测试邮箱重新注册。
 
 已经注册的邮箱应直接登录，不要再次注册。测试模式下 Supabase 通常返回 `email_exists`、`user_already_exists` 或 `User already registered`；页面会保留邮箱、清空密码并显示“前往登录”。如果 Supabase 为防止邮箱枚举返回没有有效 email identity 的模糊用户对象，页面只提示“这个邮箱可能已经注册过”，不会查询 `auth.users` 或 public profiles 来推断邮箱。
+
+## 账号安全与 Auth Dashboard 配置
+
+登录页提供密码找回，邮件回调进入 `/reset-password` 后由 Supabase 建立恢复会话并更新密码。找回页面无论邮箱是否存在都显示相同结果，避免账户枚举。设置页只展示当前会话能够可靠取得的信息，并支持撤销其他设备的刷新会话；Supabase 当前未提供可信的设备名称列表，所以页面不会伪造设备型号或位置。其他设备已经签发的短期 access token 仍会在自身过期时才完全失效。
+
+正式上线前在 Supabase Dashboard 人工复核以下 Auth 设置；这些配置不能由 SQL migration 安全替代：
+
+1. 开启 Email Provider 和正式环境 `Confirm Email`，配置自定义 SMTP 与正确的 Site URL/Redirect URLs（包含 `/reset-password`）。
+2. 在套餐支持时开启 Leaked Password Protection；当前 Free 项目无法启用时必须作为上线风险保留。
+3. 检查登录、注册、密码重置和邮件发送 rate limits，并为公开入口启用 CAPTCHA/bot protection。
+4. 缩短不必要的 session 生命周期，确认 refresh token reuse detection，并定期轮换服务端 secret。
+5. 使用新账户实际验证注册、确认、登录、重置密码、刷新会话与退出其他设备。
+
+应用无法拦截绕过页面后直接请求 Supabase Auth 的流量，因此登录、注册和密码重置的最终暴力破解保护必须由 Supabase Auth rate limit/CAPTCHA 承担。不要把前端按钮冷却描述为安全限流。
 
 ## 昵称唯一性
 
@@ -474,6 +517,148 @@ SUPABASE_SERVICE_ROLE_KEY=服务端专用密钥
 
 该变量不得使用 `NEXT_PUBLIC_` 前缀，不得写入浏览器、日志或仓库。删除接口先用当前 access token 确认用户，再用邮箱和用户刚输入的密码重新登录验证；密码不会写入数据库。浏览器只能创建自己的删除请求，事务化应用数据清理 RPC 只向 `service_role` 授权。如果 Auth 已停用但后续数据库清理失败，请求会标记为 `failed/application_cleanup_failed`，需要维护者从受控服务端重试，不能要求用户重新注册。
 
+`202608270001_v14_security_reliability.sql` 新增私有持久化限流桶和仅 `service_role` 可执行的原子消费 RPC。账号删除按匿名化 IP（15 分钟 6 次）和用户（每小时 3 次）双重限制；客户端监控入口每个匿名化 IP 每分钟最多 20 次。数据库只保存 HMAC 后的 64 位摘要，不保存原始 IP、邮箱或 token。部署该版本前必须先执行 migration 并配置 `RATE_LIMIT_SECRET`，否则高风险接口会安全失败并返回暂不可用，不会降级为无保护模式。
+
+在一次性本地 Supabase 数据库应用全部 migration 后，可执行真实权限与原子计数断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_security_reliability_assertions.sql
+```
+
+脚本验证私有 schema、RLS、空 `search_path`、anon/authenticated 无执行权、`service_role` 最小执行权和固定窗口阻断行为，并在末尾回滚测试桶写入。
+
+## 通知中心与邮件队列
+
+执行 `202608280001_v14_notifications.sql` 后，登录用户可以在 `/notifications` 查看共同经历邀请与响应、协作编辑、权限变化、群组邀请与角色变化、群组归档、故事精选、线路外部调整和已解锁时间胶囊。通知每页读取 20 条，导航栏显示精确未读数量；账户退出或切换时，本地通知和未读数立即按身份作用域清空，旧请求不能写回新账户状态。Realtime 只用于触发重新查询，最终可见行仍由 `notifications.user_id = auth.uid()` 的 RLS 决定，并以通知 UUID 去重。
+
+通知 payload 只保存标题、时间显示文本、地点名称、变化字段等安全摘要，不复制故事正文、精确坐标、邮箱、密码或 token。普通客户端只有本人通知与偏好的 `SELECT` 权限；标记已读和修改偏好通过校验 `auth.uid()` 的受控 RPC 完成。客户端不能插入通知、伪造 actor，也不能读取或更新邮件 outbox。安全通知可以选择站内或邮件，但数据库拒绝完全关闭。
+
+`notification_email_outbox` 表示“等待邮件服务处理”，不表示已经送达。当前代码提供 `EmailProvider` 接口和明确返回 `provider_not_configured` 的开发 stub，没有连接 Resend、Postmark、SES 或其他邮件服务，也没有定时 worker。正式启用邮件前需要在服务端实现 provider adapter、用受控 worker 调用 service-role-only 的 claim/finish RPC，并使用自定义 SMTP 或事务邮件供应商；不得在浏览器中处理 outbox 或暴露 `SUPABASE_SERVICE_ROLE_KEY`。
+
+时间胶囊通知会在登录用户加载通知入口时补齐。migration 另提供仅 `service_role` 可执行的批量同步钩子，供未来 Cron/Queue 使用；当前没有安装定时任务，因此不能宣称邮件会在解锁瞬间自动发送。
+
+可在一次性本地 Supabase 数据库执行真实 RLS 与 outbox 断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_notifications_rls_assertions.sql
+```
+
+## 故事图片与私有 Storage
+
+执行 `202608280002_v14_story_media.sql` 后，故事创建者可以为已经保存的故事添加最多 10 张 JPEG、PNG 或 WebP 图片，调整顺序、选择封面并移除图片。浏览器提交的文件先在 Next.js Node 服务端检查 MIME 与文件魔数，限制为 4 MB 和 4000 万输入像素，再由 `sharp` 重新编码为 WebP 并生成 640 像素缩略图；该过程默认不复制 EXIF，因此 GPS、设备型号等隐私元数据不会进入 Storage。暂不支持动图或视频。
+
+Migration 创建私有 `story-media` bucket。浏览器没有 Storage 写权限，也不能直接写 `entry_media_assets` 或调用预留 RPC；服务端先验证用户 access token，再通过仅 `service_role` 可执行的预留 RPC 校验故事创建者、群组成员状态、每故事 10 张上限和当前 500 MiB 临时配额，随后写入随机 UUID 路径。读取时，服务端先用当前用户 JWT 查询受 RLS 保护的资产行，再签发 5 分钟 URL。Storage 本身还有第二层 SELECT policy，继续调用 `can_read_entry`：
+
+- 公开且已解锁故事：匿名用户可读取图片。
+- 私密故事：仅创建者和既有规则允许的共同经历者可读取。
+- 群组故事：仅当前有效群组成员可读取；退出或被移除后立即失权。
+- 未解锁时间胶囊：除创建者外不能读取。
+- 草稿：不创建媒体资产，也不发放图片地址。
+
+签名图片使用 `next/image` 的 `unoptimized` 模式，避免 Next 图片优化缓存把私密图片变成可重复访问的公共缓存对象。数据库只保存 bucket 路径，不保存永久 URL。
+
+故事删除、账号删除、上传失败或一小时未完成的上传会写入 `media_cleanup_queue`。部署环境还需设置至少 32 字节的服务端密钥：
+
+```dotenv
+SUPABASE_SERVICE_ROLE_KEY=服务端专用密钥
+MEDIA_CLEANUP_SECRET=至少32字节的独立随机值
+CRON_SECRET=至少32字节的独立随机值
+```
+
+清理端点保留受控的 `POST /api/media/cleanup`（请求头 `x-media-cleanup-secret`），同时支持 Vercel Cron 的 `GET`＋`Authorization: Bearer $CRON_SECRET`。`vercel.json` 在 Hobby 套餐允许的频率内每天 UTC 03:00 执行一次；Production 必须配置独立的 `CRON_SECRET`。应监控返回的 `claimed/cleaned/failed` 计数；响应不会返回文件路径或密钥。Migration 未执行或服务端密钥缺失时，界面会明确显示图片功能未初始化或暂不可用，不会退化为公开 bucket。
+
+可在一次性本地 Supabase 数据库运行多身份、群组、时间胶囊、浏览器写权限和清理 worker grant 断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_story_media_rls_assertions.sql
+```
+
+## 运营管理与内容治理
+
+`202608290001_v14_governance.sql` 新增基础管理后台、账号限制、公开内容治理和审计日志。该 migration 尚未自动应用到任何远端项目；应先在 Preview/测试项目执行并完成多身份验证，再安排生产变更。
+
+Migration 创建 `app_admins`、`account_moderation` 和 `moderation_audit_logs`，并为故事与故事路线增加 `active / restricted / removed` 治理状态。普通用户不能写入这些表或字段；所有管理动作均经过校验当前 `auth.uid()` 的 `security definer` RPC，使用空 `search_path`，写入不含私密正文的审计日志。后台只列出公开故事/公开路线的标题与统计，不会因为管理员身份读取其他用户的私密故事、群组故事或未解锁时间胶囊。
+
+账号被限制后，其公开资料和公开内容立即退出访客发现，数据库触发器同时阻止该账号继续创建或修改主要 UGC；本人仍可读取自己的资料和已有内容，并可走现有账号删除流程。内容下架是软治理状态，不物理删除原始故事。举报支持公开 Story Route，并继续实行同一举报人、同一目标一小时冷却。
+
+首次管理员必须由可信维护者在 migration 执行后人工引导。先从 Dashboard 的 Authentication 用户列表确认准确 UUID，再在 SQL Editor 执行：
+
+```sql
+insert into public.app_admins (user_id)
+values ('准确的管理员用户 UUID');
+```
+
+不要按昵称猜测 UUID，不要建立公开的“申请管理员”接口。管理员登录后，应用会用当前 Supabase access token 建立短期 HttpOnly 管理会话；`/admin` 还会在服务端再次验证角色。普通用户访问页面得到与不存在页面相同的 404，直接调用管理 RPC 也会被数据库拒绝。
+
+本地一次性数据库可运行治理 RLS 断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_governance_rls_assertions.sql
+```
+
+脚本验证普通用户不能打开管理 RPC、管理员不能读取其他用户私密正文、受限公开内容不会向匿名用户泄露、受限账号无法继续写 UGC，以及治理动作会留下审计记录。
+
+## 产品分析与运营指标
+
+`202608290002_v14_product_analytics.sql` 新增隐私有界的 `product_events`。浏览器不能直接读取或写入事件表，只能调用幂等的 `track_product_event` RPC；该函数从 `auth.uid()` 推导登录身份，不接受可伪造的用户 ID。事件属性采用严格白名单，只允许来源、内容类型、导出格式、可见性与结果数量分桶等低敏标量。故事正文、标题、搜索词、经纬度、邮箱、密码和令牌既不在前端 schema 中，也会被数据库拒绝。
+
+管理后台的“产品指标”展示最近 30 天 Acquisition、Activation、Engagement、D1/D7/D30 留存，以及“注册→Onboarding→首个故事→第二个故事→七日内回访”和“Explore→公开故事→作者主页→注册”漏斗。`admin_get_product_analytics` 只返回聚合数值，普通用户没有执行权；管理员也不会通过该接口拿到原始事件或用户 ID。`session_started` 每个浏览器标签页会话、每个登录账户最多记录一次，因此这里的活跃和留存是产品行为指标，不是计费或审计事实。
+
+本地一次性数据库可运行分析权限断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_product_analytics_rls_assertions.sql
+```
+
+当前没有接入第三方分析服务。产品事件保存在项目 PostgreSQL 中；上线前应由隐私/法律审阅确定正式保留期限，并通过受控运维任务执行清理，不能把原始事件无限期保留。
+
+## 套餐、使用量与配额
+
+`202608290003_v14_commercial_foundation.sql` 新增 `plans`、`plan_entitlements` 与 `user_subscriptions`。业务能力不按 `Free / Supporter / Creator` 名称硬编码，而是读取 `can_upload_media`、`max_storage_bytes`、`max_media_files`、`max_story_routes` 与 `advanced_export`。未建立订阅记录的用户安全回退到 Free；Free 继续保留原有 500 MiB 图片空间，避免 migration 改变现有体验。
+
+登录用户可在 `/settings/usage` 查看自己创建的故事数量、未归档路线、媒体文件和存储空间。`get_my_commercial_access()` 从 `auth.uid()` 推导身份，并从真实业务表计算使用量；浏览器不能写订阅或套餐。媒体预留 RPC 与故事路线触发器在 advisory lock 内执行配额检查，可阻止并发请求同时越过上限。达到上限只阻止新增资源，不会删除、隐藏或改变现有内容权限。
+
+本阶段没有连接支付商、没有创建商品，也没有开放升级按钮。`PaymentProvider` 当前明确返回 `payments_disabled`，不会伪造 checkout 或客户门户 URL。未来接入任何支付服务时，应由服务端 webhook 维护 `user_subscriptions`，签名验证、幂等键、退款/争议和宽限期策略需要作为独立增量迭代完成。
+
+本地一次性数据库可执行套餐隔离与配额断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_commercial_foundation_rls_assertions.sql
+```
+
+## 帮助、反馈、Feature Flags 与服务状态
+
+`202608290004_v14_product_completeness.sql` 新增 `product_feedback`、`feature_flags` 和 `feature_flag_overrides`。三张表全部启用 RLS 并撤销浏览器表权限。反馈只能通过 `/api/feedback` 提交：服务端验证可选的 Supabase access token，从验证结果派生 `user_id`，同时按匿名化 IP 和登录用户执行持久化限流，再使用 server-only service role 写入。反馈只保存分类、用户主动填写的说明、无查询参数的当前 pathname、构建版本和处理状态，不自动采集故事正文、截图、邮箱、密码或 token。
+
+页面右下角提供全局“反馈”入口，支持 Bug、功能建议、内容问题和其他；原生对话框提供键盘焦点约束、Escape 关闭和关闭后的焦点恢复。若 `RATE_LIMIT_SECRET`、service role 或 migration 尚未配置，接口安全失败并显示普通中文提示，不会退化为无保护公开写入。
+
+Feature Flags 初始包含 `media_upload`、`notifications`、`subscriptions` 和 `creator_features`。`get_evaluated_feature_flags()` 不接收用户 ID，只根据 `auth.uid()`、全局开关、百分比和可信维护者写入的个人覆盖项返回最终布尔值。匿名访问不会进入非 100% 的百分比分流。Feature Flag 只控制产品展示和灰度，不能授予 Story、群组、媒体、管理后台或订阅的数据库权限。
+
+新增公开静态页面 `/help`、`/terms`、`/privacy`、`/community-guidelines` 和 `/status`。注册页可以直接访问三份法律/社区草案；草案均明确标注 `Draft / 待法律审阅`，不得当作最终法律保证。上线前至少需要专业审阅适用法律与管辖、未成年人、内容许可、侵权流程、数据处理法律基础、供应商和跨境传输、数据保留、申诉机制、付费退款和责任限制。
+
+`/status` 复用 `/api/health`，只公开 Web App、Database、Media 的当前 `ok / degraded`、短版本号和检查时间；不会返回数据库 URL、Bucket 名、环境变量或密钥，也不会伪造历史 SLA。媒体检查要求服务端 Supabase 凭据和私密 `story-media` Bucket 均可用。
+
+可选公开构建标签：
+
+```dotenv
+NEXT_PUBLIC_APP_VERSION=
+```
+
+Vercel Production 优先使用 `VERCEL_GIT_COMMIT_SHA`，本地未设置时显示 `local`。本阶段没有连接 CMS、外部状态平台或反馈 SaaS。
+
+本地一次性数据库可执行反馈和 Feature Flag 权限断言（不要在远端或生产库运行）：
+
+```bash
+psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
+  -f supabase/tests/v14_product_completeness_rls_assertions.sql
+```
+
 本地一次性数据库验证：
 
 ```bash
@@ -518,7 +703,21 @@ psql "$LOCAL_DB_URL" -v ON_ERROR_STOP=1 \
 
 ## 错误处理与监控
 
-Supabase/Auth/PostgreSQL 已知错误按 code/status 映射为中文提示；未知错误只显示统一安全文案，不向用户暴露表名、SQL、约束名、堆栈或 Supabase 内部消息。开发环境会从 `reportOperationalError` 记录经过白名单筛选的 code、status、message、details、hint 和操作名，不记录密码、access token、refresh token 或密钥；生产监控应统一在该入口接入 Sentry 等服务。应用和动态地图均有可恢复错误边界。
+Supabase/Auth/PostgreSQL 已知错误按 code/status 映射为中文提示；未知错误只显示统一安全文案，不向用户暴露表名、SQL、约束名、堆栈或 Supabase 内部消息。开发环境会从 `reportOperationalError` 输出便于调试的白名单字段；生产环境只把 context、错误类型、code/status、digest 和不含查询参数的 route 发往同源 `/api/monitoring/client`。生产监控事件不包含 message、stack、故事标题/正文、邮箱、坐标、密码或 token，并由服务端写入结构化 runtime log。当前没有绑定任何付费监控提供商；未来 adapter 应继续消费同一安全事件，而不是在组件中直接上传原始错误。
+
+`app/error.tsx` 与 `app/global-error.tsx` 覆盖页面和根级 React 错误。`/api/health` 使用浏览器级 Supabase key 做有界数据库可达性检查，只返回 `ok/degraded`、组件状态、短版本号和检查时间；不返回数据库 URL、schema、环境变量或原始错误。健康接口返回 `cache-control: no-store`，数据库不可达时使用 HTTP 503。
+
+## 备份与灾难恢复
+
+完整流程见 [`docs/disaster-recovery.md`](docs/disaster-recovery.md)。当前目标为 RPO 24 小时、RTO 8 小时，但在定时备份和季度恢复演练实际落实前，它们只是目标而非 SLA。数据库逻辑备份、Storage 对象备份和不含 secret 的平台配置清单必须分别保存；Supabase 数据库备份不包含 Storage 文件。
+
+本地可运行非破坏性检查：
+
+```bash
+npm run dr:validate
+```
+
+该命令只核对 migration/rebuild 清单、灾备文档章节和 `.env.example` 的空 secret 占位，不连接 Supabase、不恢复数据、不修改远端资源。正式恢复必须先进入隔离项目，通过匿名、所有者、共同经历者与群组权限矩阵后才能考虑切换流量。
 
 ## 浏览器安全与移动端导航
 
@@ -526,14 +725,11 @@ Next.js 为全部页面返回 CSP、`frame-ancestors 'none'`、`X-Frame-Options:
 
 760px 以下使用明确的“菜单”按钮打开纵向导航，不再依赖不可见的横向滚动；页面根节点禁止横向溢出，地图筛选和新建记录按钮保持在 320px 视口内。登录、注册互相切换时会保留经过白名单校验的 `next`，支持记录详情、群组、用户主页、时间线和故事路线，同时继续拒绝外部 URL 与异常编码。
 
-## 依赖安全状态（2026-07-25）
+## 依赖安全状态（2026-08-27）
 
-当前官方稳定版 `next@16.2.11` 的生产依赖审计仍报告：
+Phase 1 在不跨 Next.js 主版本的前提下升级到 `next@16.3.3` 与匹配的 `eslint-config-next@16.3.3`。实际安装树使用 `postcss@8.5.23`、`sharp@0.35.4` 与 `nanoid@3.3.18`，消除了旧版 Next.js 间接依赖的已知 high。开发工具链中的 `brace-expansion` 与 `js-yaml` 也通过兼容的传递依赖更新修复；没有执行 `npm audit fix --force`，没有降级 Next.js，也没有使用 package override 绕过官方依赖范围。
 
-- `sharp@0.34.5`：2 个 high，来自 libvips 的 CVE-2026-33327、CVE-2026-33328、CVE-2026-35590、CVE-2026-35591；修复版本要求 `sharp >= 0.35.0`。
-- Next.js 内置 `postcss@8.4.31`：1 个 high，审计包含 GHSA-qx2v-qp2m-jg93 与 GHSA-6g55-p6wh-862q。
-
-共计 3 个 high。`npm audit fix --force` 当前建议降级到不兼容的 `next@9.3.3`，因此没有执行；也没有用未经 Next.js 官方兼容声明的 overrides 强行替换内部依赖。本项仍是上线风险：正式发布前必须升级到携带安全 `sharp`/`postcss` 的稳定 Next.js，并重新确认 `npm audit --omit=dev` 为可接受状态，不能把当前状态描述为“漏洞已解决”。
+本次验证结果：`npm audit --omit=dev` 为 0，完整 `npm audit` 也为 0。该结果只代表锁文件在 2026-08-27 当时的公开 advisory 状态；每次 Preview/Production 发布仍必须重新审计，不能把一次结果当作永久安全保证。
 
 ## 目录与源码交付清理
 
@@ -559,6 +755,7 @@ __MACOSX/
 - v1.1 与 v1.2 的 `202608040001` 至 `202608070001` migration 必须按顺序应用；`202608050005` 修复匿名 Explore ACL，`202608050006` 补充复合标签发现能力，`202608070001` 增加可信运营端维护的公开故事精选。
 - v1.3 的 `202608080001_v13_global_search.sql`、`202608080002_v13_entry_drafts.sql` 和 `202608080003_v13_data_portability_account_deletion.sql` 已按顺序应用到当前测试项目；正式环境仍必须按相同顺序单独执行。
 - `202608110001_v13_global_search_escape_fix.sql`、`202608110002_trigger_function_execute_hardening.sql` 与 `20260811111243_timeline_participant_acl_fix.sql` 已于 2026-08-11 按顺序应用到测试项目 `bmzsabgzzrwekghdceyj`。匿名关键词与特殊字符搜索已验证不再返回 `22025`，两个内部触发器函数对 `public`、`anon` 和 `authenticated` 的直接执行权均已撤销；匿名公共时间线可以正常调用，同时匿名直接读取参与关系仍返回零行。
+- `202608270001_v14_security_reliability.sql`、`202608280001_v14_notifications.sql` 与 `202608280002_v14_story_media.sql` 已于 2026-08-28 按顺序应用到测试项目；随后追加 `20260828102358_v14_rate_limit_clock_fix.sql` 与 `20260828102558_v14_rate_limit_builtin_fix.sql` 修复 PostgreSQL 17 兼容问题。远端 migration 历史当前同步至这 30 份文件；本地新增的治理、产品分析、商业化基础与产品完整性 migration 尚未远端执行。媒体清理使用私密 Storage、独立服务端密钥与每日受控 Cron。
 - 数据导出与账号删除依赖 `202608080003_v13_data_portability_account_deletion.sql` 和服务端 `SUPABASE_SERVICE_ROLE_KEY`。缺少任一项时页面会明确报告未初始化或服务端未配置；不会把管理密钥放入客户端作为替代方案。
 - 全局搜索每页 20 条，数据库单次最多允许 51 条。搜索地图只绘制当前已加载页中的地点结果；时间胶囊在解锁前即使对作者可读，也不会进入搜索、标签结果数量或包含它的路线结果。
 - Explore 的五个主题分类基于受控标签关键词，不会用正文猜测分类；复合标签（例如 `#成都科幻`、`#文学空间`）可以进入对应分类，未添加相关标签的公开故事仍只会出现在“全部”。
@@ -567,13 +764,15 @@ __MACOSX/
 - 2026-08-11 已在测试项目使用隔离的 A/B/C 账户完成浏览器与普通 publishable-key 客户端验证：匿名与未授权账户无法读取 A 的私密故事；B 接受邀请后只能修改获授的时间字段；撤回后已打开详情立即清空；C 无法读取群组故事；B 退出群组后 UI 与 API 同时失去访问权。测试结束后已按精确 UUID 清理 3 个测试账户、3 条测试故事和 1 个测试群组；不能把这组人工验证替代为长期 CI。
 - 首页同地点聚合是当前有界结果上的近似分组，不是永久地点实体；别名不同的同一地点暂不会自动合并，群组地图与时间线仍保留单故事标记。
 - OpenStreetMap 公共瓦片适合开发和低流量 MVP；生产流量需遵守其政策并评估合规瓦片服务。
-- 头像仅支持 URL；评论为平铺分页，不支持回复树；未实现私信、即时聊天、完整管理员后台和商业化功能。
+- 头像仅支持 URL；评论为平铺分页，不支持回复树；未实现私信、即时聊天或真实收费。套餐、entitlement、使用量与配额边界已经建立，但支付 provider 保持关闭。当前管理员后台覆盖基础治理和第一版产品漏斗/留存，不是完整 CRM 或 BI 系统；分析事件保留期限与自动清理任务仍需上线前确定。
 - 公开群组成员列表当前可由访客读取；私密群组成员列表只对有效成员开放。
 - 群组目录、群组记录、成员、邀请和评论使用“时间＋稳定 ID”的复合 keyset cursor，并在追加页面时去重；群组地图仍按页限制读取，不会一次加载全部数据。
 - 时间线当前使用 offset 分页；数据量增长后应迁移为由“时间是否未定＋事件年份＋当地时间＋创建时间＋ID”组成的 keyset cursor。
 - 路线编辑器只在选择群组路线时加载其他成员的群组记录；私密路线编辑器默认只列作者自己的记录，已有且仍有权限的群组节点继续兼容。
 - 删除是永久操作，只有二次确认，没有回收站。
+- 邮件通知当前只进入安全 outbox，没有正式 provider、worker 或调度器；选择邮件模式不代表邮件已经发送。Story Route 当前仍只有创建者可以编辑，通知钩子只覆盖有权限的管理员归档/精选等外部调整，不扩大编辑权限。
+- 故事图片目前只允许故事创建者管理；共同经历者即使拥有正文或地点字段权限，也不会自动获得媒体写权限。500 MiB Free 上限已由 entitlement 模型管理，客户端不会按套餐名称决定媒体或路线权限。
 
 ## 下一阶段建议
 
-优先顺序是：执行并验证第五、六份 migration；在 Supabase 测试项目关闭 Confirm Email 后完成 A/B/C 浏览器 E2E；升级到修复间接漏洞的稳定 Next.js；把路线隐私降级和 RLS 集成测试放入 CI；将时间线与路线列表的 offset 分页继续迁移为复合 keyset cursor；完成 PostGIS、服务端标记聚合和 PostgreSQL 全文搜索；然后再建设路线封面、审核后台、通知、数据导出、监控告警和专用瓦片服务。
+优先顺序是：在隔离 Supabase 按顺序应用并验证 `202608290001_v14_governance.sql`、`202608290002_v14_product_analytics.sql`、`202608290003_v14_commercial_foundation.sql`、`202608290004_v14_product_completeness.sql`，人工引导首位管理员并完成普通用户/管理员双身份冒烟；由法律专业人士审阅三份草案；确定分析、反馈与审计数据保留期限；为邮件 outbox 接入 worker 与 provider；把所有 RLS SQL 断言纳入本地 Supabase CI；如未来启用付费，应先实现服务端 webhook、幂等账单同步和取消/退款策略，再开放任何升级入口。

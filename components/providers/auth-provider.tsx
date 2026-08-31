@@ -17,6 +17,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import type { Profile } from "@/types/database";
+import { recordAuthenticatedSession } from "@/lib/analytics/provider";
 
 type AuthContextValue = {
   user: User | null;
@@ -27,6 +28,7 @@ type AuthContextValue = {
   dataScope: string;
   configured: boolean;
   authError: string | null;
+  isAdmin: boolean;
   refreshAuth: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -43,8 +45,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(isSupabaseConfigured);
   const [signingOut, setSigningOut] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [adminState, setAdminState] = useState<{ userId: string | null; isAdmin: boolean }>({
+    userId: null,
+    isAdmin: false,
+  });
   const activeUserId = useRef<string | null>(null);
   const profileRequestSequence = useRef(0);
+  const adminRequestSequence = useRef(0);
+
+  const syncAdminSession = useCallback(async (nextSession: Session | null) => {
+    const requestId = ++adminRequestSequence.current;
+    const userId = nextSession?.user.id ?? null;
+    if (!nextSession) {
+      setAdminState({ userId: null, isAdmin: false });
+      try {
+        await fetch("/api/admin/session", { method: "DELETE" });
+      } catch {
+        // The HttpOnly cookie also expires quickly; sign-out state is hidden immediately.
+      }
+      return;
+    }
+    try {
+      const response = await fetch("/api/admin/session", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${nextSession.access_token}` },
+      });
+      const payload: unknown = await response.json();
+      const isAdmin = typeof payload === "object"
+        && payload !== null
+        && "isAdmin" in payload
+        && payload.isAdmin === true;
+      if (adminRequestSequence.current === requestId && activeUserId.current === userId) {
+        setAdminState({ userId, isAdmin });
+      }
+    } catch {
+      if (adminRequestSequence.current === requestId && activeUserId.current === userId) {
+        setAdminState({ userId, isAdmin: false });
+      }
+    }
+  }, []);
 
   const loadProfile = useCallback(async (userId: string) => {
     const requestId = ++profileRequestSequence.current;
@@ -89,15 +128,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setAuthError(null);
       setLoading(false);
+      void syncAdminSession(data.session);
 
       if (nextUserId) {
+        recordAuthenticatedSession(nextUserId);
         await loadProfile(nextUserId);
       }
     } catch (error) {
       setAuthError(getFriendlyError(error));
       setLoading(false);
     }
-  }, [loadProfile]);
+  }, [loadProfile, syncAdminSession]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -112,7 +153,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profileRequestSequence.current += 1;
       setProfileState({ userId: activeUserId.current, profile: null });
       setSession(data.session);
+      void syncAdminSession(data.session);
       if (data.session?.user.id) {
+        recordAuthenticatedSession(data.session.user.id);
         void loadProfile(data.session.user.id);
       }
       setLoading(false);
@@ -124,8 +167,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       profileRequestSequence.current += 1;
       setProfileState({ userId: activeUserId.current, profile: null });
       setSession(nextSession);
+      void syncAdminSession(nextSession);
       setAuthError(null);
       if (nextSession?.user.id) {
+        recordAuthenticatedSession(nextSession.user.id);
         window.setTimeout(() => void loadProfile(nextSession.user.id), 0);
       }
       setLoading(false);
@@ -135,7 +180,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
       listener.subscription.unsubscribe();
     };
-  }, [loadProfile]);
+  }, [loadProfile, syncAdminSession]);
 
   const signOut = useCallback(async () => {
     setSigningOut(true);
@@ -148,6 +193,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       activeUserId.current = null;
       profileRequestSequence.current += 1;
       setSession(null);
+      adminRequestSequence.current += 1;
+      setAdminState({ userId: null, isAdmin: false });
+      void fetch("/api/admin/session", { method: "DELETE" }).catch(() => undefined);
       setProfileState({ userId: null, profile: null });
       for (const key of [
         "story-map-pending-entry",
@@ -171,6 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     : currentUserId ?? "anon";
   const profile =
     profileState.userId === currentUserId ? profileState.profile : null;
+  const isAdmin = adminState.userId === currentUserId && adminState.isAdmin;
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -182,12 +231,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       dataScope,
       configured: isSupabaseConfigured,
       authError,
+      isAdmin,
       refreshAuth,
       refreshProfile,
       signOut,
     }),
     [
       authError,
+      isAdmin,
       dataReady,
       dataScope,
       loading,

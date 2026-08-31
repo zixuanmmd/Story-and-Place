@@ -13,6 +13,7 @@ import {
   descendingTimestampFilter,
   type TimestampCursor,
 } from "@/lib/data/keyset-pagination";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 export const GROUP_PAGE_SIZE = 30;
 
@@ -198,6 +199,7 @@ export async function leaveGroup(groupId: string) {
 export async function inviteGroupMember(groupId: string, inviteeId: string) {
   const { error } = await getSupabaseBrowserClient().rpc("invite_group_member", { p_group_id: groupId, p_invitee_id: inviteeId });
   if (error) throw error;
+  recordProductEvent("invitation_sent", { source: "group-members", invitation_type: "group" });
 }
 export async function respondGroupInvitation(invitationId: string, accept: boolean) {
   const { error } = await getSupabaseBrowserClient().rpc("respond_group_invitation", {
@@ -205,6 +207,9 @@ export async function respondGroupInvitation(invitationId: string, accept: boole
     p_accept: accept,
   });
   if (error) throw error;
+  if (accept) {
+    recordProductEvent("invitation_accepted", { source: "group-invitations", invitation_type: "group" });
+  }
 }
 export async function removeGroupMember(groupId: string, userId: string) {
   const { error } = await getSupabaseBrowserClient().rpc("remove_group_member", { p_group_id: groupId, p_user_id: userId });

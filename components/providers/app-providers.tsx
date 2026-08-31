@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { AuthProvider, useAuth } from "@/components/providers/auth-provider";
+import { GlobalFeedback } from "@/components/feedback/global-feedback";
 
 function AuthDataBoundary({ children }: { children: ReactNode }) {
   const { dataReady, dataScope } = useAuth();
@@ -20,7 +21,10 @@ function AuthScopedTree({ children }: { children: ReactNode }) {
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <AuthProvider>
-      <AuthDataBoundary>{children}</AuthDataBoundary>
+      <AuthDataBoundary>
+        {children}
+        <GlobalFeedback />
+      </AuthDataBoundary>
     </AuthProvider>
   );
 }

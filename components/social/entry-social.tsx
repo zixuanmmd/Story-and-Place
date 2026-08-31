@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
 import {
@@ -25,6 +26,7 @@ import type { GroupRole } from "@/types/database";
 import { mergeUniqueById } from "@/lib/data/keyset-pagination";
 
 export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
+  const router = useRouter();
   const { user } = useAuth();
   const [comments, setComments] = useState<CommentWithProfile[]>([]);
   const [likeCount, setLikeCount] = useState(0);
@@ -82,7 +84,7 @@ export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
 
   const toggleLike = async () => {
     if (!user) {
-      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      router.push(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
       return;
     }
     setBusy(true);
@@ -103,7 +105,7 @@ export function EntrySocial({ entry }: { entry: MapEntryWithProfile }) {
 
   const submitComment = async () => {
     if (!user) {
-      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      router.push(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
       return;
     }
     const parsed = commentSchema.safeParse({ content });

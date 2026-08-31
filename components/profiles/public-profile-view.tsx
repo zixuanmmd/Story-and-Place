@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -28,6 +29,7 @@ import type {
 } from "@/types/database";
 import { GuidedEmptyState } from "@/components/ui/guided-empty-state";
 import { PublicStoryList } from "@/components/profiles/public-story-list";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const LifePathMap = dynamic(
   () => import("@/components/routes/story-route-map").then((module) => module.StoryRouteMap),
@@ -44,6 +46,7 @@ const EMPTY_SUMMARY: LifePathSummary = {
 };
 
 export function PublicProfileView({ profileIdentifier }: { profileIdentifier: string }) {
+  const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const currentUserId = user?.id ?? null;
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -59,6 +62,7 @@ export function PublicProfileView({ profileIdentifier }: { profileIdentifier: st
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const requestSequence = useRef(0);
+  const trackedPublicOpen = useRef(false);
 
   const load = useCallback(async () => {
     if (authLoading) return;
@@ -84,6 +88,10 @@ export function PublicProfileView({ profileIdentifier }: { profileIdentifier: st
       ]);
       if (requestSequence.current !== requestId) return;
       setProfile(nextProfile);
+      if (!trackedPublicOpen.current) {
+        trackedPublicOpen.current = true;
+        recordProductEvent("public_profile_opened", { source: "public-profile" });
+      }
       setEntries(pathPage.entries);
       setTruncated(pathPage.truncated);
       setSummary(nextSummary);
@@ -123,7 +131,7 @@ export function PublicProfileView({ profileIdentifier }: { profileIdentifier: st
   const toggleFollow = async () => {
     if (!profile) return;
     if (!currentUserId) {
-      window.location.assign(`/login?next=${encodeURIComponent(`/users/${profile.username}`)}`);
+      router.push(`/login?next=${encodeURIComponent(`/users/${profile.username}`)}`);
       return;
     }
     setBusy(true);

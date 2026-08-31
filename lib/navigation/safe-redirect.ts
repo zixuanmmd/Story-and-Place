@@ -4,6 +4,8 @@ const ALLOWED_PATHS = new Set([
   "/",
   "/my-records",
   "/settings",
+  "/settings/notifications",
+  "/notifications",
   "/groups",
   "/groups/new",
   "/groups/invitations",

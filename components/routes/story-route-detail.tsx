@@ -9,10 +9,12 @@ import { archiveStoryRoute, featureStoryRoute, getStoryRouteBySlug, listStoryRou
 import { getMyGroupRole } from "@/lib/data/groups";
 import { getFriendlyError } from "@/lib/errors";
 import { getRouteShareUrl, shareRoute } from "@/lib/routes/share";
+import { recordProductEvent } from "@/lib/analytics/provider";
 import { PlaceCategoryIcon, getCategoryLabel } from "@/lib/categories/registry";
 import type { GroupRole, StoryRouteItemWithEntry, StoryRouteWithRelations } from "@/types/database";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
 import { ROUTE_AUDIENCE_PRESENTATION } from "@/lib/privacy/presentation";
+import { ReportDialog } from "@/components/social/report-dialog";
 
 const RouteMap = dynamic(
   () => import("./story-route-map").then((module) => module.StoryRouteMap),
@@ -98,6 +100,9 @@ function StoryRouteDetailForScope({ shareSlug }: { shareSlug: string }) {
           window.location.origin,
         ),
       }, navigator);
+      if (result === "copied" || result === "shared") {
+        recordProductEvent("story_shared", { source: "route-detail", content_type: "route" });
+      }
       setStatus(result === "copied" ? "分享链接已复制。" : result === "shared" ? "分享面板已打开。" : null);
     } catch {
       setStatus("暂时无法复制分享链接，请从浏览器地址栏复制。");
@@ -158,9 +163,11 @@ function StoryRouteDetailForScope({ shareSlug }: { shareSlug: string }) {
                 {user?.id === route.created_by && !route.archived_at ? <Link className="secondary-button nav-link" href={`/routes/${route.share_slug}/edit`}>编辑</Link> : null}
                 {(user?.id === route.created_by || (route.visibility === "group" && (role === "owner" || role === "admin"))) && !route.archived_at ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void archive()}>归档</button> : null}
                 {route.visibility === "group" && (role === "owner" || role === "admin") ? <button className="quiet-button" type="button" disabled={busy} aria-pressed={Boolean(route.featured_at)} onClick={() => void feature()}>{route.featured_at ? "取消置顶" : "群组置顶"}</button> : null}
+                {route.visibility === "public" && route.published_at ? <ReportDialog targetType="route" targetId={route.id} /> : null}
               </div>
             </section>
             {route.archived_at ? <div className="inline-notice">这条路线已归档，只读保留。</div> : null}
+            {user?.id === route.created_by && route.moderation_status && route.moderation_status !== "active" ? <div className="inline-notice">这条公开路线当前已被限制展示。{route.moderation_reason ? ` 原因：${route.moderation_reason}` : ""}</div> : null}
             {route.privacy_downgraded_at ? <div className="inline-notice">路线中的地点故事不再对所有人开放，因此这条路线已自动收回为只有你可见，避免继续分享原地点。</div> : null}
             {hiddenNodeCount ? <div className="inline-notice">有 {hiddenNodeCount} 个节点因记录删除或权限变化而暂时不可用，页面不会泄露其内容或位置。</div> : null}
             {status ? <div className="inline-error" role="status">{status}</div> : null}

@@ -1,7 +1,18 @@
 import type { MetadataRoute } from "next";
 import { resolveServerSiteUrl } from "@/lib/config/site-url";
 
-const PUBLIC_ROUTES = ["/", "/explore", "/search", "/tags", "/groups"] as const;
+const PUBLIC_ROUTES = [
+  "/",
+  "/explore",
+  "/search",
+  "/tags",
+  "/groups",
+  "/help",
+  "/terms",
+  "/privacy",
+  "/community-guidelines",
+  "/status",
+] as const;
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const siteUrl = resolveServerSiteUrl({

@@ -52,14 +52,19 @@ export type PlaceCategorySlug =
   | "travel"
   | "memorial"
   | "other";
-export type ReportTargetType = "entry" | "comment" | "user" | "group";
+export type ReportTargetType = "entry" | "comment" | "user" | "group" | "route";
 export type ReportReason =
   | "spam"
   | "harassment"
   | "hate"
   | "privacy"
   | "misinformation"
+  | "copyright"
+  | "inappropriate"
   | "other";
+export type ContentModerationStatus = "active" | "restricted" | "removed";
+export type AccountModerationStatus = "active" | "restricted";
+export type ReportStatus = "pending" | "reviewing" | "resolved" | "dismissed";
 export type OnboardingPreference = {
   user_id: string;
   onboarding_status: "pending" | "completed" | "skipped";
@@ -102,6 +107,86 @@ export type GlobalSearchResult = {
 
 export type AccountDeletionMode = "delete_all" | "preserve_public";
 export type AccountDeletionStatus = "pending" | "processing" | "completed" | "failed";
+export type NotificationCategory =
+  | "collaboration"
+  | "groups"
+  | "time_capsules"
+  | "security"
+  | "product_updates";
+export type NotificationDeliveryMode = "in_app" | "email" | "off";
+export type NotificationType =
+  | "entry_invitation_received"
+  | "entry_invitation_accepted"
+  | "entry_invitation_declined"
+  | "entry_permissions_changed"
+  | "entry_participant_removed"
+  | "entry_collaborator_edited"
+  | "group_invitation_received"
+  | "group_invitation_accepted"
+  | "group_invitation_declined"
+  | "group_joined"
+  | "group_role_changed"
+  | "group_membership_changed"
+  | "group_archived"
+  | "story_route_updated"
+  | "story_featured"
+  | "story_restricted"
+  | "time_capsule_unlocked"
+  | "security_alert"
+  | "export_completed"
+  | "account_deletion_status"
+  | "product_update";
+export type NotificationEmailStatus =
+  | "pending"
+  | "processing"
+  | "sent"
+  | "failed"
+  | "cancelled";
+export type EntryMediaStatus =
+  | "pending"
+  | "ready"
+  | "failed"
+  | "deleting"
+  | "deleted";
+export type MediaCleanupStatus = "pending" | "processing" | "failed";
+export type ProductEventName =
+  | "session_started"
+  | "signup_started"
+  | "signup_completed"
+  | "onboarding_started"
+  | "onboarding_completed"
+  | "onboarding_skipped"
+  | "story_create_started"
+  | "story_created"
+  | "story_published"
+  | "draft_created"
+  | "draft_resumed"
+  | "route_created"
+  | "search_used"
+  | "search_result_opened"
+  | "explore_opened"
+  | "public_story_opened"
+  | "public_profile_opened"
+  | "story_shared"
+  | "invitation_sent"
+  | "invitation_accepted"
+  | "export_started"
+  | "export_completed";
+export type SubscriptionStatus = "trialing" | "active" | "past_due" | "canceled";
+export type EntitlementKey =
+  | "can_upload_media"
+  | "max_storage_bytes"
+  | "max_media_files"
+  | "max_story_routes"
+  | "advanced_export";
+export type EntitlementValueType = "boolean" | "integer";
+export type ProductFeedbackCategory = "bug" | "feature" | "content" | "other";
+export type ProductFeedbackStatus = "new" | "reviewing" | "resolved" | "dismissed";
+export type FeatureFlagKey =
+  | "media_upload"
+  | "notifications"
+  | "subscriptions"
+  | "creator_features";
 
 export type Database = {
   public: {
@@ -136,6 +221,432 @@ export type Database = {
           updated_at?: string;
         };
         Relationships: [];
+      };
+      plans: {
+        Row: {
+          code: string;
+          name: string;
+          description: string;
+          is_active: boolean;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          code: string;
+          name: string;
+          description?: string;
+          is_active?: boolean;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          name?: string;
+          description?: string;
+          is_active?: boolean;
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      plan_entitlements: {
+        Row: {
+          plan_code: string;
+          entitlement_key: EntitlementKey;
+          value_type: EntitlementValueType;
+          boolean_value: boolean | null;
+          integer_value: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          plan_code: string;
+          entitlement_key: EntitlementKey;
+          value_type: EntitlementValueType;
+          boolean_value?: boolean | null;
+          integer_value?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          value_type?: EntitlementValueType;
+          boolean_value?: boolean | null;
+          integer_value?: number | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "plan_entitlements_plan_code_fkey";
+            columns: ["plan_code"];
+            isOneToOne: false;
+            referencedRelation: "plans";
+            referencedColumns: ["code"];
+          },
+        ];
+      };
+      user_subscriptions: {
+        Row: {
+          user_id: string;
+          plan_code: string;
+          status: SubscriptionStatus;
+          current_period_start: string | null;
+          current_period_end: string | null;
+          canceled_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          plan_code: string;
+          status?: SubscriptionStatus;
+          current_period_start?: string | null;
+          current_period_end?: string | null;
+          canceled_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          plan_code?: string;
+          status?: SubscriptionStatus;
+          current_period_start?: string | null;
+          current_period_end?: string | null;
+          canceled_at?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "user_subscriptions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "user_subscriptions_plan_code_fkey";
+            columns: ["plan_code"];
+            isOneToOne: false;
+            referencedRelation: "plans";
+            referencedColumns: ["code"];
+          },
+        ];
+      };
+      product_feedback: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          category: ProductFeedbackCategory;
+          message: string;
+          current_route: string;
+          app_version: string;
+          status: ProductFeedbackStatus;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          category: ProductFeedbackCategory;
+          message: string;
+          current_route: string;
+          app_version: string;
+          status?: ProductFeedbackStatus;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: ProductFeedbackStatus;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "product_feedback_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      feature_flags: {
+        Row: {
+          key: FeatureFlagKey;
+          description: string;
+          enabled: boolean;
+          rollout_percentage: number;
+          authenticated_only: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          key: FeatureFlagKey;
+          description?: string;
+          enabled?: boolean;
+          rollout_percentage?: number;
+          authenticated_only?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          description?: string;
+          enabled?: boolean;
+          rollout_percentage?: number;
+          authenticated_only?: boolean;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      feature_flag_overrides: {
+        Row: {
+          flag_key: FeatureFlagKey;
+          user_id: string;
+          enabled: boolean;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          flag_key: FeatureFlagKey;
+          user_id: string;
+          enabled: boolean;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          enabled?: boolean;
+          created_by?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "feature_flag_overrides_flag_key_fkey";
+            columns: ["flag_key"];
+            isOneToOne: false;
+            referencedRelation: "feature_flags";
+            referencedColumns: ["key"];
+          },
+          {
+            foreignKeyName: "feature_flag_overrides_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "feature_flag_overrides_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      app_admins: {
+        Row: {
+          user_id: string;
+          role: "admin";
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          user_id: string;
+          role?: "admin";
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      account_moderation: {
+        Row: {
+          user_id: string;
+          status: AccountModerationStatus;
+          reason: string;
+          restricted_at: string | null;
+          restricted_by: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          status?: AccountModerationStatus;
+          reason?: string;
+          restricted_at?: string | null;
+          restricted_by?: string | null;
+          updated_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      moderation_audit_logs: {
+        Row: {
+          id: string;
+          admin_user_id: string | null;
+          action: string;
+          target_type: "entry" | "route" | "user" | "report";
+          target_id: string;
+          report_id: string | null;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      product_events: {
+        Row: {
+          id: string;
+          event_name: ProductEventName;
+          user_id: string | null;
+          anonymous_session_id: string;
+          properties: Json;
+          occurred_at: string;
+          created_at: string;
+        };
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      notifications: {
+        Row: {
+          id: string;
+          user_id: string;
+          type: NotificationType;
+          category: NotificationCategory;
+          actor_id: string | null;
+          entity_type: string | null;
+          entity_id: string | null;
+          payload: Json;
+          dedupe_key: string | null;
+          read_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          type: NotificationType;
+          category: NotificationCategory;
+          actor_id?: string | null;
+          entity_type?: string | null;
+          entity_id?: string | null;
+          payload?: Json;
+          dedupe_key?: string | null;
+          read_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          read_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notifications_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "notifications_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      notification_preferences: {
+        Row: {
+          user_id: string;
+          category: NotificationCategory;
+          delivery_mode: NotificationDeliveryMode;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          category: NotificationCategory;
+          delivery_mode?: NotificationDeliveryMode;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          delivery_mode?: NotificationDeliveryMode;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_preferences_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      notification_email_outbox: {
+        Row: {
+          id: string;
+          user_id: string;
+          notification_type: NotificationType;
+          category: NotificationCategory;
+          actor_id: string | null;
+          entity_type: string | null;
+          entity_id: string | null;
+          payload: Json;
+          dedupe_key: string | null;
+          status: NotificationEmailStatus;
+          attempt_count: number;
+          next_attempt_at: string;
+          processing_started_at: string | null;
+          sent_at: string | null;
+          last_error_code: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          notification_type: NotificationType;
+          category: NotificationCategory;
+          actor_id?: string | null;
+          entity_type?: string | null;
+          entity_id?: string | null;
+          payload?: Json;
+          dedupe_key?: string | null;
+          status?: NotificationEmailStatus;
+          attempt_count?: number;
+          next_attempt_at?: string;
+          processing_started_at?: string | null;
+          sent_at?: string | null;
+          last_error_code?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: NotificationEmailStatus;
+          attempt_count?: number;
+          next_attempt_at?: string;
+          processing_started_at?: string | null;
+          sent_at?: string | null;
+          last_error_code?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_email_outbox_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "notification_email_outbox_actor_id_fkey";
+            columns: ["actor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       user_experience_preferences: {
         Row: {
@@ -241,6 +752,106 @@ export type Database = {
           },
         ];
       };
+      entry_media_assets: {
+        Row: {
+          id: string;
+          entry_id: string;
+          user_id: string;
+          storage_path: string;
+          thumbnail_path: string;
+          source_mime_type: "image/jpeg" | "image/png" | "image/webp";
+          mime_type: "image/webp";
+          width: number;
+          height: number;
+          size_bytes: number;
+          thumbnail_size_bytes: number;
+          sort_order: number;
+          is_cover: boolean;
+          status: EntryMediaStatus;
+          failure_code: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          entry_id: string;
+          user_id: string;
+          storage_path: string;
+          thumbnail_path: string;
+          source_mime_type: "image/jpeg" | "image/png" | "image/webp";
+          mime_type?: "image/webp";
+          width: number;
+          height: number;
+          size_bytes: number;
+          thumbnail_size_bytes: number;
+          sort_order?: number;
+          is_cover?: boolean;
+          status?: EntryMediaStatus;
+          failure_code?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          sort_order?: number;
+          is_cover?: boolean;
+          status?: EntryMediaStatus;
+          failure_code?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "entry_media_assets_entry_id_fkey";
+            columns: ["entry_id"];
+            isOneToOne: false;
+            referencedRelation: "map_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "entry_media_assets_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      media_cleanup_queue: {
+        Row: {
+          id: string;
+          asset_id: string | null;
+          bucket_id: "story-media";
+          object_paths: string[];
+          status: MediaCleanupStatus;
+          attempt_count: number;
+          next_attempt_at: string;
+          processing_started_at: string | null;
+          last_error_code: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          asset_id?: string | null;
+          bucket_id?: "story-media";
+          object_paths: string[];
+          status?: MediaCleanupStatus;
+          attempt_count?: number;
+          next_attempt_at?: string;
+          processing_started_at?: string | null;
+          last_error_code?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: MediaCleanupStatus;
+          attempt_count?: number;
+          next_attempt_at?: string;
+          processing_started_at?: string | null;
+          last_error_code?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       account_deletion_requests: {
         Row: {
           id: string;
@@ -300,6 +911,10 @@ export type Database = {
           allow_comments: boolean;
           unlock_at: string | null;
           featured_at: string | null;
+          moderation_status: ContentModerationStatus;
+          moderated_at: string | null;
+          moderated_by: string | null;
+          moderation_reason: string;
           created_at: string;
           updated_at: string;
         };
@@ -324,6 +939,10 @@ export type Database = {
           allow_comments?: boolean;
           unlock_at?: string | null;
           featured_at?: string | null;
+          moderation_status?: ContentModerationStatus;
+          moderated_at?: string | null;
+          moderated_by?: string | null;
+          moderation_reason?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -346,6 +965,10 @@ export type Database = {
           allow_comments?: boolean;
           unlock_at?: string | null;
           featured_at?: string | null;
+          moderation_status?: ContentModerationStatus;
+          moderated_at?: string | null;
+          moderated_by?: string | null;
+          moderation_reason?: string;
           updated_at?: string;
         };
         Relationships: [
@@ -713,7 +1336,7 @@ export type Database = {
           target_id: string;
           reason: ReportReason;
           description: string;
-          status: "pending" | "reviewing" | "resolved" | "dismissed";
+          status: ReportStatus;
           created_at: string;
           reviewed_at: string | null;
           reviewed_by: string | null;
@@ -726,7 +1349,7 @@ export type Database = {
           target_id: string;
           reason: ReportReason;
           description?: string;
-          status?: "pending" | "reviewing" | "resolved" | "dismissed";
+          status?: ReportStatus;
           created_at?: string;
         };
         Update: Record<string, never>;
@@ -747,6 +1370,10 @@ export type Database = {
           featured_at: string | null;
           featured_by: string | null;
           privacy_downgraded_at: string | null;
+          moderation_status: ContentModerationStatus;
+          moderated_at: string | null;
+          moderated_by: string | null;
+          moderation_reason: string;
           node_count: number;
           created_at: string;
           updated_at: string;
@@ -765,6 +1392,10 @@ export type Database = {
           featured_at?: string | null;
           featured_by?: string | null;
           privacy_downgraded_at?: string | null;
+          moderation_status?: ContentModerationStatus;
+          moderated_at?: string | null;
+          moderated_by?: string | null;
+          moderation_reason?: string;
           node_count?: number;
           created_at?: string;
           updated_at?: string;
@@ -775,6 +1406,10 @@ export type Database = {
           visibility?: StoryRouteVisibility;
           group_id?: string | null;
           published_at?: string | null;
+          moderation_status?: ContentModerationStatus;
+          moderated_at?: string | null;
+          moderated_by?: string | null;
+          moderation_reason?: string;
           archived_at?: string | null;
           archived_by?: string | null;
           featured_at?: string | null;
@@ -843,6 +1478,106 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      track_product_event: {
+        Args: {
+          p_event_id: string;
+          p_anonymous_session_id: string;
+          p_event_name: ProductEventName;
+          p_properties?: Json;
+        };
+        Returns: undefined;
+      };
+      admin_get_product_analytics: {
+        Args: { p_start_at?: string; p_end_at?: string };
+        Returns: Json;
+      };
+      is_app_admin: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      is_account_restricted: {
+        Args: { p_user_id: string };
+        Returns: boolean;
+      };
+      admin_get_dashboard: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      admin_list_users: {
+        Args: { p_query?: string | null; p_offset?: number; p_limit?: number };
+        Returns: Json;
+      };
+      admin_list_reports: {
+        Args: { p_status?: ReportStatus | null; p_offset?: number; p_limit?: number };
+        Returns: Json;
+      };
+      admin_list_public_content: {
+        Args: { p_kind?: "entry" | "route" | null; p_offset?: number; p_limit?: number };
+        Returns: Json;
+      };
+      admin_list_audit_logs: {
+        Args: { p_limit?: number };
+        Returns: Json;
+      };
+      admin_set_account_restriction: {
+        Args: { p_user_id: string; p_restricted: boolean; p_reason?: string };
+        Returns: undefined;
+      };
+      admin_moderate_entry: {
+        Args: { p_entry_id: string; p_status: ContentModerationStatus; p_reason?: string };
+        Returns: undefined;
+      };
+      admin_moderate_story_route: {
+        Args: { p_route_id: string; p_status: ContentModerationStatus; p_reason?: string };
+        Returns: undefined;
+      };
+      admin_set_entry_featured: {
+        Args: { p_entry_id: string; p_featured: boolean };
+        Returns: undefined;
+      };
+      admin_review_report: {
+        Args: { p_report_id: string; p_status: Exclude<ReportStatus, "pending">; p_notes?: string };
+        Returns: undefined;
+      };
+      set_notification_preference: {
+        Args: {
+          p_category: NotificationCategory;
+          p_delivery_mode: NotificationDeliveryMode;
+        };
+        Returns: Database["public"]["Tables"]["notification_preferences"]["Row"];
+      };
+      mark_notification_read: {
+        Args: { p_notification_id: string };
+        Returns: undefined;
+      };
+      mark_all_notifications_read: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      record_my_export_completed: {
+        Args: { p_format: "json" | "csv" | "geojson" };
+        Returns: undefined;
+      };
+      sync_my_time_capsule_notifications: {
+        Args: { p_limit?: number };
+        Returns: number;
+      };
+      sync_due_time_capsule_notifications: {
+        Args: { p_limit?: number };
+        Returns: number;
+      };
+      claim_notification_email_outbox: {
+        Args: { p_limit?: number };
+        Returns: Database["public"]["Tables"]["notification_email_outbox"]["Row"][];
+      };
+      finish_notification_email_outbox: {
+        Args: {
+          p_outbox_id: string;
+          p_sent: boolean;
+          p_error_code?: string | null;
+        };
+        Returns: undefined;
+      };
       is_display_name_available: {
         Args: { candidate: string };
         Returns: boolean;
@@ -1190,6 +1925,101 @@ export type Database = {
         };
         Returns: GlobalSearchResult[];
       };
+      consume_server_rate_limit: {
+        Args: {
+          p_scope: string;
+          p_key_hash: string;
+          p_limit: number;
+          p_window_seconds: number;
+        };
+        Returns: Array<{
+          allowed: boolean;
+          retry_after_seconds: number;
+          remaining: number;
+        }>;
+      };
+      reserve_entry_media_asset: {
+        Args: {
+          p_user_id: string;
+          p_entry_id: string;
+          p_source_mime_type: "image/jpeg" | "image/png" | "image/webp";
+          p_size_bytes: number;
+          p_thumbnail_size_bytes: number;
+          p_width: number;
+          p_height: number;
+        };
+        Returns: Database["public"]["Tables"]["entry_media_assets"]["Row"];
+      };
+      mark_entry_media_asset_ready: {
+        Args: { p_asset_id: string };
+        Returns: Database["public"]["Tables"]["entry_media_assets"]["Row"];
+      };
+      mark_entry_media_asset_failed: {
+        Args: { p_asset_id: string; p_failure_code?: string | null };
+        Returns: undefined;
+      };
+      begin_entry_media_asset_delete: {
+        Args: { p_asset_id: string };
+        Returns: Database["public"]["Tables"]["entry_media_assets"]["Row"];
+      };
+      set_entry_media_cover: {
+        Args: { p_entry_id: string; p_asset_id: string };
+        Returns: undefined;
+      };
+      reorder_entry_media_assets: {
+        Args: { p_entry_id: string; p_asset_ids: string[] };
+        Returns: undefined;
+      };
+      get_my_story_media_usage: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          used_bytes: number;
+          quota_bytes: number;
+          file_count: number;
+        }>;
+      };
+      get_my_commercial_access: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          plan_code: string;
+          plan_name: string;
+          plan_description: string;
+          subscription_status: SubscriptionStatus | null;
+          current_period_end: string | null;
+          can_upload_media: boolean;
+          max_storage_bytes: number;
+          max_media_files: number;
+          max_story_routes: number;
+          advanced_export: boolean;
+          story_count: number;
+          active_route_count: number;
+          storage_bytes: number;
+          media_file_count: number;
+        }>;
+      };
+      get_evaluated_feature_flags: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          flag_key: FeatureFlagKey;
+          enabled: boolean;
+        }>;
+      };
+      claim_story_media_cleanup: {
+        Args: { p_limit?: number };
+        Returns: Database["public"]["Tables"]["media_cleanup_queue"]["Row"][];
+      };
+      finish_story_media_cleanup: {
+        Args: {
+          p_queue_id: string;
+          p_succeeded: boolean;
+          p_error_code?: string | null;
+        };
+        Returns: undefined;
+      };
+      complete_entry_media_asset_delete: {
+        Args: { p_asset_id: string };
+        Returns: undefined;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
@@ -1197,11 +2027,22 @@ export type Database = {
 };
 
 export type Profile = Database["public"]["Tables"]["profiles"]["Row"];
+export type Plan = Database["public"]["Tables"]["plans"]["Row"];
+export type PlanEntitlement = Database["public"]["Tables"]["plan_entitlements"]["Row"];
+export type UserSubscription = Database["public"]["Tables"]["user_subscriptions"]["Row"];
+export type ProductFeedback = Database["public"]["Tables"]["product_feedback"]["Row"];
+export type FeatureFlag = Database["public"]["Tables"]["feature_flags"]["Row"];
+export type FeatureFlagOverride = Database["public"]["Tables"]["feature_flag_overrides"]["Row"];
 export type MapEntry = Database["public"]["Tables"]["map_entries"]["Row"];
 export type MapEntryInsert = Database["public"]["Tables"]["map_entries"]["Insert"];
 export type MapEntryUpdate = Database["public"]["Tables"]["map_entries"]["Update"];
 export type EntryDraft = Database["public"]["Tables"]["entry_drafts"]["Row"];
 export type AccountDeletionRequest = Database["public"]["Tables"]["account_deletion_requests"]["Row"];
+export type Notification = Database["public"]["Tables"]["notifications"]["Row"];
+export type NotificationPreference = Database["public"]["Tables"]["notification_preferences"]["Row"];
+export type NotificationEmailOutbox = Database["public"]["Tables"]["notification_email_outbox"]["Row"];
+export type EntryMediaAsset = Database["public"]["Tables"]["entry_media_assets"]["Row"];
+export type MediaCleanupQueueItem = Database["public"]["Tables"]["media_cleanup_queue"]["Row"];
 export type PlaceCategory = Database["public"]["Tables"]["place_categories"]["Row"];
 export type Group = Database["public"]["Tables"]["groups"]["Row"];
 export type GroupMember = Database["public"]["Tables"]["group_members"]["Row"];
@@ -1213,6 +2054,10 @@ export type EntryParticipant = Database["public"]["Tables"]["entry_participants"
 export type EntryEditLog = Database["public"]["Tables"]["entry_edit_logs"]["Row"];
 export type Tag = Database["public"]["Tables"]["tags"]["Row"];
 export type EntryTag = Database["public"]["Tables"]["entry_tags"]["Row"];
+
+export type NotificationWithActor = Notification & {
+  actor: Pick<Profile, "display_name" | "avatar_url"> | null;
+};
 
 export type EntryParticipantWithProfile = EntryParticipant & {
   profiles: Pick<Profile, "display_name" | "avatar_url"> | null;

@@ -5,15 +5,17 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/providers/auth-provider";
 import { getFriendlyError } from "@/lib/errors";
+import { useNotificationUnreadCount } from "@/hooks/use-notification-unread-count";
 
 export function AppHeader() {
-  const { user, profile, loading, signOut } = useAuth();
+  const { user, profile, loading, signOut, isAdmin } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const router = useRouter();
+  const { unreadCount } = useNotificationUnreadCount();
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -73,13 +75,23 @@ export function AppHeader() {
         <Link className="quiet-button nav-link" href="/explore">探索</Link>
         <Link className="quiet-button nav-link" href="/tags">标签</Link>
         <Link className="quiet-button nav-link" href="/groups">群组</Link>
+        <Link className="quiet-button nav-link" href="/help">帮助</Link>
         {user ? (
           <>
             <Link className="quiet-button nav-link" href="/feed">信息流</Link>
             <Link className="quiet-button nav-link" href="/timeline">时间线</Link>
             <Link className="quiet-button nav-link" href="/routes">路线</Link>
             <Link className="quiet-button nav-link" href="/entry-invitations">共同邀请</Link>
+            <Link className="quiet-button nav-link notification-nav-link" href="/notifications">
+              通知
+              {unreadCount ? (
+                <span className="notification-count" aria-label={`${unreadCount} 条未读通知`}>
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              ) : null}
+            </Link>
             <Link className="quiet-button nav-link" href="/my-records">我的记录</Link>
+            {isAdmin ? <Link className="quiet-button nav-link" href="/admin">管理</Link> : null}
             <Link className="quiet-button nav-link" href="/settings">{profile?.display_name ?? "个人设置"}</Link>
             <button className="secondary-button" type="button" onClick={handleSignOut} disabled={busy}>
               {busy ? "退出中…" : "退出"}

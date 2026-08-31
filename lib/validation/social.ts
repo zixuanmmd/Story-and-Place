@@ -5,9 +5,9 @@ export const commentSchema = z.object({
 });
 
 export const reportSchema = z.object({
-  target_type: z.enum(["entry", "comment", "user", "group"]),
+  target_type: z.enum(["entry", "comment", "user", "group", "route"]),
   target_id: z.uuid(),
-  reason: z.enum(["spam", "harassment", "hate", "privacy", "misinformation", "other"]),
+  reason: z.enum(["spam", "harassment", "privacy", "copyright", "inappropriate", "other"]),
   description: z.string().trim().max(1000, "补充说明不能超过 1000 个字符。"),
 });
 

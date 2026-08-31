@@ -9,6 +9,20 @@ export const loginSchema = z.object({
   password: z.string().min(8, "密码至少需要 8 个字符。"),
 });
 
+export const passwordRecoverySchema = z.object({
+  email: z.email("请输入有效的邮箱地址。"),
+});
+
+export const passwordResetSchema = z
+  .object({
+    password: z.string().min(8, "密码至少需要 8 个字符。"),
+    confirmPassword: z.string().min(1, "请再次输入新密码。"),
+  })
+  .refine((values) => values.password === values.confirmPassword, {
+    message: "两次输入的密码不一致。",
+    path: ["confirmPassword"],
+  });
+
 export const registerSchema = loginSchema.extend({
   displayName: z
     .string()
@@ -29,3 +43,5 @@ export const loginFormSchema = loginSchema.extend({
 
 export type LoginValues = z.infer<typeof loginSchema>;
 export type RegisterValues = z.infer<typeof registerSchema>;
+export type PasswordRecoveryValues = z.infer<typeof passwordRecoverySchema>;
+export type PasswordResetValues = z.infer<typeof passwordResetSchema>;
