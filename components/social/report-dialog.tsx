@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/providers/auth-provider";
 import { submitReport } from "@/lib/data/social";
 import { getFriendlyError } from "@/lib/errors";
@@ -9,9 +10,9 @@ import type { ReportTargetType } from "@/types/database";
 const REASONS = [
   ["spam", "垃圾内容"],
   ["harassment", "骚扰"],
-  ["hate", "仇恨或攻击"],
-  ["privacy", "隐私泄露"],
-  ["misinformation", "虚假信息"],
+  ["privacy", "侵犯隐私"],
+  ["copyright", "侵权"],
+  ["inappropriate", "不适当内容"],
   ["other", "其他"],
 ] as const;
 
@@ -22,6 +23,7 @@ export function ReportDialog({
   targetType: ReportTargetType;
   targetId: string;
 }) {
+  const router = useRouter();
   const { user } = useAuth();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [reason, setReason] = useState<(typeof REASONS)[number][0]>("spam");
@@ -33,7 +35,7 @@ export function ReportDialog({
 
   const open = () => {
     if (!user) {
-      window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
+      router.push(`/login?next=${encodeURIComponent(window.location.pathname + window.location.search)}`);
       return;
     }
     setStatus(null);
@@ -91,4 +93,3 @@ export function ReportDialog({
     </div>
   );
 }
-

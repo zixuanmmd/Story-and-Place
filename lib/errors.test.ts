@@ -68,6 +68,14 @@ describe("friendly error mapping", () => {
       { code: "42501", message: "route cannot be edited" },
       "这条路线已归档，或你没有编辑权限。",
     ],
+    [
+      { code: "23514", message: "story route quota reached" },
+      "故事线路数量已达到当前上限。你可以先归档不再使用的线路。",
+    ],
+    [
+      { code: "23514", message: "story media storage quota reached" },
+      "图片存储空间已达到当前上限。",
+    ],
   ])("路线错误映射成不泄露数据库细节的提示", (error, expected) => {
     expect(getFriendlyError(error)).toBe(expected);
   });

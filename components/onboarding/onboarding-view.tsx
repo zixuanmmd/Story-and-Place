@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { ProtectedState } from "@/components/layout/protected-state";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -16,6 +16,7 @@ import {
   type OnboardingInterest,
 } from "@/lib/validation/onboarding";
 import { getTemplateForInterests } from "@/lib/templates/story-templates";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 export function OnboardingView() {
   const { user, loading: authLoading, configured } = useAuth();
@@ -24,6 +25,7 @@ export function OnboardingView() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const trackedStart = useRef(false);
 
   useEffect(() => {
     if (authLoading || !user || !configured) return;
@@ -34,6 +36,10 @@ export function OnboardingView() {
         if (!decision.shouldOnboard) {
           router.replace("/");
           return;
+        }
+        if (!trackedStart.current) {
+          trackedStart.current = true;
+          recordProductEvent("onboarding_started", { source: "welcome" });
         }
         setSelected(decision.preference.interests as OnboardingInterest[]);
       })
@@ -65,6 +71,7 @@ export function OnboardingView() {
     setStatus(null);
     try {
       await skipOnboarding(selected);
+      recordProductEvent("onboarding_skipped", { source: "welcome" });
       router.replace("/");
     } catch (error) {
       setStatus(getFriendlyError(error, "暂时无法跳过引导，请稍后重试。"));

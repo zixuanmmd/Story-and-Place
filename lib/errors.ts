@@ -70,6 +70,21 @@ export function getFriendlyError(
   if (normalizedMessage.includes("published route requires at least two items")) {
     return "发布路线至少需要两个地点节点。";
   }
+  if (normalizedMessage.includes("story route quota reached")) {
+    return "故事线路数量已达到当前上限。你可以先归档不再使用的线路。";
+  }
+  if (normalizedMessage.includes("media upload entitlement required")) {
+    return "当前套餐暂不支持上传故事图片。";
+  }
+  if (normalizedMessage.includes("story media file quota reached")) {
+    return "媒体文件数量已达到当前上限。";
+  }
+  if (normalizedMessage.includes("story media storage quota reached")) {
+    return "图片存储空间已达到当前上限。";
+  }
+  if (normalizedMessage.includes("duplicate report in cooldown")) {
+    return "你最近已经举报过这个对象，请稍后再试。";
+  }
   if (normalizedMessage.includes("one or more route items are not eligible")) {
     return "部分路线节点已无权使用，或与路线可见性不兼容。";
   }
@@ -120,6 +135,12 @@ export function getFriendlyError(
   if (message.includes("group responsibilities must be resolved")) {
     return "请先转移群主、退出管理员角色或归档相关群组，再删除账号。";
   }
+  if (message.includes("account is restricted") || message.includes("media owner unavailable")) {
+    return "你的账号当前受到限制，暂时不能执行这个操作。";
+  }
+  if (message.includes("application administrator required")) {
+    return "你没有运营管理权限。";
+  }
   if (message.includes("group is archived") || message.includes("group is unavailable")) {
     return "群组已归档，不能继续执行这个操作。";
   }
@@ -141,6 +162,28 @@ export function reportOperationalError(error: unknown, context: string) {
         typeof source?.details === "string" ? source.details : undefined,
       hint: typeof source?.hint === "string" ? source.hint : undefined,
     });
+    return;
   }
-  // 生产环境统一从这里接入 Sentry 等监控服务，避免各组件自行上报。
+
+  void Promise.all([
+    import("@/lib/monitoring/safe-event"),
+    import("@/lib/monitoring/provider"),
+  ]).then(([{ createSafeMonitoringEvent }, { getErrorMonitoringProvider }]) => {
+    const route = typeof window === "undefined" ? null : window.location.pathname;
+    const event = createSafeMonitoringEvent(error, context, route);
+    if (typeof window === "undefined") {
+      void getErrorMonitoringProvider().capture({
+        source: "story-and-place",
+        channel: "server",
+        ...event,
+      });
+      return;
+    }
+    void fetch("/api/monitoring/client", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(event),
+      keepalive: true,
+    }).catch(() => undefined);
+  }).catch(() => undefined);
 }

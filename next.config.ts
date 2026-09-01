@@ -1,6 +1,22 @@
 import type { NextConfig } from "next";
 
 const isDevelopment = process.env.NODE_ENV !== "production";
+const storyMediaRemotePatterns: NonNullable<
+  NonNullable<NextConfig["images"]>["remotePatterns"]
+> = [];
+try {
+  const supabaseUrl = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
+  if (supabaseUrl.protocol === "https:" || supabaseUrl.protocol === "http:") {
+    storyMediaRemotePatterns.push({
+      protocol: supabaseUrl.protocol.slice(0, -1) as "https" | "http",
+      hostname: supabaseUrl.hostname,
+      port: supabaseUrl.port,
+      pathname: "/storage/v1/object/sign/story-media/**",
+    });
+  }
+} catch {
+  // Missing/invalid Supabase configuration is handled by the application UI.
+}
 const contentSecurityPolicy = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
@@ -21,6 +37,9 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   turbopack: {
     root: process.cwd(),
+  },
+  images: {
+    remotePatterns: storyMediaRemotePatterns,
   },
   async headers() {
     return [

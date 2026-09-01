@@ -33,6 +33,16 @@ const migrationNames = [
   "202608110001_v13_global_search_escape_fix.sql",
   "202608110002_trigger_function_execute_hardening.sql",
   "20260811111243_timeline_participant_acl_fix.sql",
+  "202608270001_v14_security_reliability.sql",
+  "202608280001_v14_notifications.sql",
+  "202608280002_v14_story_media.sql",
+  "20260828102358_v14_rate_limit_clock_fix.sql",
+  "20260828102558_v14_rate_limit_builtin_fix.sql",
+  "202608290001_v14_governance.sql",
+  "202608290002_v14_product_analytics.sql",
+  "202608290003_v14_commercial_foundation.sql",
+  "202608290004_v14_product_completeness.sql",
+  "20260830085143_v14_governance_notification_entity_fix.sql",
 ];
 const outputPath = resolve(
   projectRoot,
@@ -167,6 +177,19 @@ select
   to_regclass('public.tags') is not null as tags_ready,
   to_regclass('public.entry_drafts') is not null as entry_drafts_ready,
   to_regclass('public.account_deletion_requests') is not null as account_deletion_requests_ready,
+  to_regclass('public.notifications') is not null as notifications_ready,
+  to_regclass('public.notification_preferences') is not null as notification_preferences_ready,
+  to_regclass('public.entry_media_assets') is not null as entry_media_assets_ready,
+  to_regclass('public.media_cleanup_queue') is not null as media_cleanup_queue_ready,
+  to_regclass('public.app_admins') is not null as app_admins_ready,
+  to_regclass('public.moderation_audit_logs') is not null as moderation_audit_logs_ready,
+  to_regclass('public.product_events') is not null as product_events_ready,
+  to_regclass('public.plans') is not null as plans_ready,
+  to_regclass('public.plan_entitlements') is not null as plan_entitlements_ready,
+  to_regclass('public.user_subscriptions') is not null as user_subscriptions_ready,
+  to_regclass('public.product_feedback') is not null as product_feedback_ready,
+  to_regclass('public.feature_flags') is not null as feature_flags_ready,
+  to_regclass('public.feature_flag_overrides') is not null as feature_flag_overrides_ready,
   (
     select count(*)::integer
     from public.profiles

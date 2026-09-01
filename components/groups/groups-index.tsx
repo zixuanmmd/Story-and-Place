@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -47,6 +48,7 @@ export function GroupsIndex() {
 }
 
 function GroupsIndexForScope() {
+  const router = useRouter();
   const { user, loading: authLoading, configured } = useAuth();
   const [groups, setGroups] = useState<Group[]>([]);
   const [memberships, setMemberships] = useState<GroupMember[]>([]);
@@ -96,7 +98,7 @@ function GroupsIndexForScope() {
 
   const join = async (group: Group) => {
     if (!user) {
-      window.location.assign(`/login?next=${encodeURIComponent(`/groups/${group.slug}`)}`);
+      router.push(`/login?next=${encodeURIComponent(`/groups/${group.slug}`)}`);
       return;
     }
     try {

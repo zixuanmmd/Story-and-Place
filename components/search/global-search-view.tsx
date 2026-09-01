@@ -20,6 +20,8 @@ import {
   type GlobalSearchFilters,
 } from "@/lib/validation/search";
 import type { GlobalSearchResult, GlobalSearchResultType } from "@/types/database";
+import { bucketResultCount } from "@/lib/analytics/events";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const SearchResultsMap = dynamic(
   () => import("./search-results-map").then((module) => module.SearchResultsMap),
@@ -106,6 +108,12 @@ function GlobalSearchForScope({ initialFilters }: { initialFilters: GlobalSearch
       setTotalCount(nextPage.totalCount);
       setHasMore(nextPage.hasMore);
       setError(null);
+      if (page === 0) {
+        recordProductEvent("search_used", {
+          source: "global-search",
+          result_count_bucket: bucketResultCount(nextPage.totalCount),
+        });
+      }
     } catch (loadError) {
       if (requestSequence.current !== requestId) return;
       reportOperationalError(loadError, "global-search");
@@ -175,6 +183,14 @@ function GlobalSearchForScope({ initialFilters }: { initialFilters: GlobalSearch
     () => results.filter((result) => result.result_type === "entry" && result.latitude !== null),
     [results],
   );
+
+  const openResult = (result: GlobalSearchResult) => {
+    recordProductEvent("search_result_opened", {
+      source: view === "map" ? "search-map" : "search-list",
+      result_type: result.result_type,
+    });
+    router.push(result.href);
+  };
 
   return (
     <main className="content-page search-page">
@@ -257,7 +273,7 @@ function GlobalSearchForScope({ initialFilters }: { initialFilters: GlobalSearch
               mapEntries.length ? (
                 <div className="search-map-shell">
                   <MapErrorBoundary>
-                    <SearchResultsMap results={results} onSelect={(result) => router.push(result.href)} onTileError={() => setMapError("地图瓦片暂时无法加载，请检查网络后重试。")} />
+                    <SearchResultsMap results={results} onSelect={openResult} onTileError={() => setMapError("地图瓦片暂时无法加载，请检查网络后重试。")} />
                   </MapErrorBoundary>
                   {mapError ? <div className="inline-error" role="alert">{mapError}</div> : null}
                   <p>地图显示当前已加载结果中的 {mapEntries.length} 个地点故事。</p>
@@ -271,7 +287,7 @@ function GlobalSearchForScope({ initialFilters }: { initialFilters: GlobalSearch
                       <span className={`search-result-type search-result-type--${result.result_type}`}>{TYPE_LABELS[result.result_type]}</span>
                       {result.visibility ? <span>{result.visibility === "public" ? "所有人可读" : result.visibility === "group" ? "群组可读" : "仅相关的人可读"}</span> : null}
                     </div>
-                    <h3><Link href={result.href}>{result.title}</Link></h3>
+                    <h3><Link href={result.href} onClick={() => recordProductEvent("search_result_opened", { source: "search-list", result_type: result.result_type })}>{result.title}</Link></h3>
                     <p className="search-result-subtitle">{result.subtitle}{result.time_label ? ` · ${result.time_label}` : ""}</p>
                     {result.excerpt ? <p>{result.excerpt}</p> : null}
                     <footer>
@@ -291,7 +307,7 @@ function GlobalSearchForScope({ initialFilters }: { initialFilters: GlobalSearch
                           setDraft(next);
                           applyFilters(next);
                         }}>只看此作者</button> : null}
-                        <Link href={result.href}>打开</Link>
+                        <Link href={result.href} onClick={() => recordProductEvent("search_result_opened", { source: "search-list", result_type: result.result_type })}>打开</Link>
                       </div>
                     </footer>
                   </article>

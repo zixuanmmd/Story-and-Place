@@ -7,6 +7,7 @@ import {
   entryDraftPayloadSchema,
   type EntryDraftPayload,
 } from "@/lib/validation/entry-draft";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 export type AutosaveStatus = "idle" | "pending" | "saving" | "saved" | "error" | "conflict";
 
@@ -108,7 +109,10 @@ export function useEntryAutosave({
       }).then((saved) => {
         draftRef.current = { id: saved.id, revision: saved.revision };
         persistedFingerprint.current = snapshot.fingerprint;
-        if (!previousId) createdCallback.current?.(saved.id);
+        if (!previousId) {
+          recordProductEvent("draft_created", { source: "entry-autosave", content_type: "draft" });
+          createdCallback.current?.(saved.id);
+        }
         if (mounted.current) setStatus("saved");
         return draftRef.current;
       }).catch((error: unknown) => {

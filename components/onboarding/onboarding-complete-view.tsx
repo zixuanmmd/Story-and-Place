@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { ProtectedState } from "@/components/layout/protected-state";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -10,6 +10,7 @@ import { completeOnboarding } from "@/lib/data/onboarding";
 import { getEntryById } from "@/lib/data/entries";
 import { getFriendlyError } from "@/lib/errors";
 import type { MapEntryWithProfile } from "@/types/database";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -19,6 +20,7 @@ export function OnboardingCompleteView() {
   const [entry, setEntry] = useState<MapEntryWithProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
+  const trackedCompletion = useRef(false);
   const invalidEntryId = !entryId || !UUID_PATTERN.test(entryId);
 
   useEffect(() => {
@@ -28,7 +30,13 @@ export function OnboardingCompleteView() {
       .then(async (nextEntry) => {
         if (!nextEntry || nextEntry.user_id !== user.id) throw new Error("owned onboarding story not found");
         await completeOnboarding(nextEntry.id);
-        if (active) setEntry(nextEntry);
+        if (active) {
+          if (!trackedCompletion.current) {
+            trackedCompletion.current = true;
+            recordProductEvent("onboarding_completed", { source: "first-story" });
+          }
+          setEntry(nextEntry);
+        }
       })
       .catch((error) => { if (active) setStatus(getFriendlyError(error, "暂时无法打开刚刚创建的故事。")); })
       .finally(() => { if (active) setLoading(false); });

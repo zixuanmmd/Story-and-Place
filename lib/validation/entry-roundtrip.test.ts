@@ -23,6 +23,10 @@ const exactEntry: MapEntry = {
   allow_comments: true,
   unlock_at: null,
   featured_at: null,
+  moderation_status: "active",
+  moderated_at: null,
+  moderated_by: null,
+  moderation_reason: "",
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };

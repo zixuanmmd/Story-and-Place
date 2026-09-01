@@ -83,6 +83,7 @@ import {
   clusterEntriesByPlace,
   type PlaceStoryCluster,
 } from "@/lib/map/place-story-clusters";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const MapCanvas = dynamic(
   () => import("@/components/map/map-canvas").then((module) => module.MapCanvas),
@@ -386,6 +387,7 @@ function MapExperienceForScope({
           initialDraft: draft,
         });
       }
+      recordProductEvent("draft_resumed", { source: "map-draft-url", content_type: "draft" });
       setMobilePanel("editor");
       setStatus("草稿已恢复，可以继续写作。");
     }).catch((error) => {
@@ -451,6 +453,7 @@ function MapExperienceForScope({
     setTimePlayback(nextState);
   }, []);
   const startCreate = useCallback((coordinates: Coordinates) => {
+    recordProductEvent("story_create_started", { source: "map" });
     setSelectedEntry(null);
     setSelectedPlaceClusterId(null);
     setEditor({ mode: "create", coordinates });
@@ -595,6 +598,19 @@ function MapExperienceForScope({
     }
 
     const saved = outcome.value;
+    const created = editor?.mode !== "edit";
+    if (created) {
+      recordProductEvent("story_created", {
+        source: isOnboardingFlow ? "onboarding" : "map",
+        content_type: "entry",
+        visibility: saved.visibility,
+      });
+      recordProductEvent("story_published", {
+        source: isOnboardingFlow ? "onboarding" : "map",
+        content_type: "entry",
+        visibility: saved.visibility,
+      });
+    }
     window.sessionStorage.removeItem(DRAFT_STORAGE_KEY);
     window.sessionStorage.removeItem("story-map-onboarding-draft");
     entryQuery.upsert(saved);

@@ -9,6 +9,7 @@ import { EntrySocial } from "@/components/social/entry-social";
 import { EntryTags } from "@/components/entries/entry-tags";
 import { EntryParticipants } from "@/components/entries/entry-participants";
 import { EntryEditHistory } from "@/components/entries/entry-edit-history";
+import { EntryMediaGallery } from "@/components/entries/entry-media-gallery";
 import {
   formatUnlockAt,
   getTimeCapsuleState,
@@ -79,10 +80,16 @@ export function EntryDetail({
             : `这枚时间胶囊已于 ${formatUnlockAt(entry.unlock_at)} 解锁。`}
         </p>
       ) : null}
+      {isOwner && entry.moderation_status && entry.moderation_status !== "active" ? (
+        <p className="inline-notice" role="status">
+          这条公开故事当前已被限制展示。{entry.moderation_reason ? ` 原因：${entry.moderation_reason}` : ""}
+        </p>
+      ) : null}
       <h2>{entry.title}</h2>
       <p className="detail-category"><PlaceCategoryIcon category={entry.place_category_slug} /> {getCategoryLabel(entry.place_category_slug)}</p>
       {entry.place_name ? <p className="detail-place">⌖ {entry.place_name}</p> : null}
       <EntryTags entry={entry} />
+      <EntryMediaGallery entryId={entry.id} storyTitle={entry.title} isOwner={isOwner} />
       <div className="detail-content">{entry.content}</div>
 
       <div className="detail-share-link">
@@ -99,7 +106,7 @@ export function EntryDetail({
         {entry.unlock_at ? <div><dt>胶囊解锁</dt><dd>{formatUnlockAt(entry.unlock_at)}</dd></div> : null}
       </dl>
 
-      {canEdit || isOwner ? (
+      {(canEdit || isOwner) && (entry.moderation_status ?? "active") === "active" ? (
         <div className="owner-actions">
           {canEdit ? <button className="secondary-button" type="button" onClick={onEdit} disabled={busy}>编辑</button> : null}
           {isOwner ? (

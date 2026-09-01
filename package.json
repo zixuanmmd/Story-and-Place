@@ -2,23 +2,30 @@
   "name": "story-emotion-map",
   "version": "0.1.0",
   "private": true,
+  "allowScripts": {
+    "unrs-resolver": true
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dr:validate": "node scripts/validate-disaster-recovery.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.4.0",
     "@supabase/supabase-js": "^2.110.8",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.26.0",
-    "next": "^16.2.11",
+    "next": "16.3.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-hook-form": "^7.82.0",
     "react-leaflet": "^5.0.0",
+    "server-only": "0.0.1",
+    "sharp": "0.35.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -28,7 +35,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.2.11",
+    "eslint-config-next": "16.3.3",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"

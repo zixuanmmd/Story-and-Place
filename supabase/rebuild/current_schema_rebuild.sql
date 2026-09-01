@@ -7587,6 +7587,4537 @@ grant select on table public.entry_participants to anon;
 notify pgrst, 'reload schema';
 
 -- ============================================================
+-- MIGRATION: 202608270001_v14_security_reliability.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 1: persistent server-side rate limiting.
+--
+-- The browser cannot call this function. Server routes hash identifiers before
+-- sending them to PostgreSQL, so raw IP addresses, e-mail addresses and access
+-- tokens are never stored in the bucket table.
+
+create schema if not exists private;
+
+revoke all on schema private from public, anon, authenticated;
+
+create table if not exists private.rate_limit_buckets (
+  scope text not null,
+  key_hash text not null,
+  window_started_at timestamptz not null,
+  request_count integer not null,
+  updated_at timestamptz not null default now(),
+  primary key (scope, key_hash),
+  constraint rate_limit_buckets_scope_length
+    check (char_length(scope) between 1 and 80),
+  constraint rate_limit_buckets_key_hash_format
+    check (key_hash ~ '^[0-9a-f]{64}$'),
+  constraint rate_limit_buckets_request_count_positive
+    check (request_count >= 1)
+);
+
+alter table private.rate_limit_buckets enable row level security;
+
+revoke all on table private.rate_limit_buckets
+from public, anon, authenticated;
+grant select, insert, update, delete on table private.rate_limit_buckets
+to service_role;
+
+create or replace function public.consume_server_rate_limit(
+  p_scope text,
+  p_key_hash text,
+  p_limit integer,
+  p_window_seconds integer
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds integer,
+  remaining integer
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  current_time timestamptz := clock_timestamp();
+  bucket private.rate_limit_buckets%rowtype;
+  window_duration interval;
+begin
+  if p_scope is null or char_length(p_scope) not between 1 and 80 then
+    raise exception using errcode = '22023', message = 'invalid rate limit scope';
+  end if;
+  if p_key_hash is null or p_key_hash !~ '^[0-9a-f]{64}$' then
+    raise exception using errcode = '22023', message = 'invalid rate limit key';
+  end if;
+  if p_limit not between 1 and 10000 then
+    raise exception using errcode = '22023', message = 'invalid rate limit size';
+  end if;
+  if p_window_seconds not between 1 and 86400 then
+    raise exception using errcode = '22023', message = 'invalid rate limit window';
+  end if;
+
+  window_duration := pg_catalog.make_interval(secs => p_window_seconds);
+
+  insert into private.rate_limit_buckets as existing (
+    scope,
+    key_hash,
+    window_started_at,
+    request_count,
+    updated_at
+  )
+  values (p_scope, p_key_hash, current_time, 1, current_time)
+  on conflict (scope, key_hash) do update
+  set
+    window_started_at = case
+      when existing.window_started_at <= current_time - window_duration
+        then current_time
+      else existing.window_started_at
+    end,
+    request_count = case
+      when existing.window_started_at <= current_time - window_duration
+        then 1
+      else existing.request_count + 1
+    end,
+    updated_at = current_time
+  returning * into bucket;
+
+  allowed := bucket.request_count <= p_limit;
+  remaining := pg_catalog.greatest(p_limit - bucket.request_count, 0);
+  retry_after_seconds := case
+    when allowed then 0
+    else pg_catalog.greatest(
+      1,
+      pg_catalog.ceil(
+        extract(epoch from bucket.window_started_at + window_duration - current_time)
+      )::integer
+    )
+  end;
+  return next;
+end;
+$$;
+
+revoke all on function public.consume_server_rate_limit(text, text, integer, integer)
+from public, anon, authenticated;
+grant execute on function public.consume_server_rate_limit(text, text, integer, integer)
+to service_role;
+
+comment on function public.consume_server_rate_limit(text, text, integer, integer)
+is 'Atomically consumes a fixed-window bucket for trusted server routes; identifiers must be HMAC hashed before calling.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608280001_v14_notifications.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 2: privacy-safe notifications, delivery
+-- preferences, and an email outbox. This migration only queues email work;
+-- it does not claim that an email provider has delivered a message.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.entry_participants') is null
+    or to_regclass('public.entry_edit_logs') is null
+    or to_regclass('public.groups') is null
+    or to_regclass('public.group_members') is null
+    or to_regclass('public.group_invitations') is null
+    or to_regclass('public.story_routes') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'v1.4 notifications require all migrations through 202608270001';
+  end if;
+end;
+$$;
+
+create schema if not exists private;
+revoke all on schema private from public, anon, authenticated;
+
+create table public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  type text not null,
+  category text not null,
+  actor_id uuid references public.profiles(id) on delete set null,
+  entity_type text,
+  entity_id uuid,
+  payload jsonb not null default '{}'::jsonb,
+  dedupe_key text,
+  read_at timestamptz,
+  created_at timestamptz not null default now(),
+  constraint notifications_type_values check (type in (
+    'entry_invitation_received',
+    'entry_invitation_accepted',
+    'entry_invitation_declined',
+    'entry_permissions_changed',
+    'entry_participant_removed',
+    'entry_collaborator_edited',
+    'group_invitation_received',
+    'group_invitation_accepted',
+    'group_invitation_declined',
+    'group_joined',
+    'group_role_changed',
+    'group_membership_changed',
+    'group_archived',
+    'story_route_updated',
+    'story_featured',
+    'story_restricted',
+    'time_capsule_unlocked',
+    'security_alert',
+    'export_completed',
+    'account_deletion_status',
+    'product_update'
+  )),
+  constraint notifications_category_values check (category in (
+    'collaboration', 'groups', 'time_capsules', 'security', 'product_updates'
+  )),
+  constraint notifications_entity_values check (
+    entity_type is null or entity_type in (
+      'entry', 'entry_participant', 'group', 'group_invitation',
+      'story_route', 'account', 'export', 'system'
+    )
+  ),
+  constraint notifications_entity_consistency check (
+    (entity_type is null and entity_id is null)
+    or (entity_type is not null and entity_id is not null)
+  ),
+  constraint notifications_payload_is_object check (jsonb_typeof(payload) = 'object'),
+  constraint notifications_dedupe_key_length check (
+    dedupe_key is null or char_length(dedupe_key) between 1 and 180
+  )
+);
+
+create table public.notification_preferences (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  category text not null,
+  delivery_mode text not null default 'in_app',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, category),
+  constraint notification_preferences_category_values check (category in (
+    'collaboration', 'groups', 'time_capsules', 'security', 'product_updates'
+  )),
+  constraint notification_preferences_delivery_values check (
+    delivery_mode in ('in_app', 'email', 'off')
+  ),
+  constraint notification_preferences_security_required check (
+    category <> 'security' or delivery_mode <> 'off'
+  )
+);
+
+create table public.notification_email_outbox (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  notification_type text not null,
+  category text not null,
+  actor_id uuid references public.profiles(id) on delete set null,
+  entity_type text,
+  entity_id uuid,
+  payload jsonb not null default '{}'::jsonb,
+  dedupe_key text,
+  status text not null default 'pending',
+  attempt_count integer not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  processing_started_at timestamptz,
+  sent_at timestamptz,
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint notification_email_outbox_type_values check (notification_type in (
+    'entry_invitation_received',
+    'entry_invitation_accepted',
+    'entry_invitation_declined',
+    'entry_permissions_changed',
+    'entry_participant_removed',
+    'entry_collaborator_edited',
+    'group_invitation_received',
+    'group_invitation_accepted',
+    'group_invitation_declined',
+    'group_joined',
+    'group_role_changed',
+    'group_membership_changed',
+    'group_archived',
+    'story_route_updated',
+    'story_featured',
+    'story_restricted',
+    'time_capsule_unlocked',
+    'security_alert',
+    'export_completed',
+    'account_deletion_status',
+    'product_update'
+  )),
+  constraint notification_email_outbox_category_values check (category in (
+    'collaboration', 'groups', 'time_capsules', 'security', 'product_updates'
+  )),
+  constraint notification_email_outbox_entity_consistency check (
+    (entity_type is null and entity_id is null)
+    or (entity_type is not null and entity_id is not null)
+  ),
+  constraint notification_email_outbox_payload_is_object check (
+    jsonb_typeof(payload) = 'object'
+  ),
+  constraint notification_email_outbox_status_values check (
+    status in ('pending', 'processing', 'sent', 'failed', 'cancelled')
+  ),
+  constraint notification_email_outbox_attempt_range check (
+    attempt_count between 0 and 20
+  ),
+  constraint notification_email_outbox_error_code_length check (
+    last_error_code is null or char_length(last_error_code) <= 80
+  )
+);
+
+create unique index notifications_user_dedupe_idx
+  on public.notifications(user_id, dedupe_key)
+  where dedupe_key is not null;
+create index notifications_user_created_idx
+  on public.notifications(user_id, created_at desc, id desc);
+create index notifications_user_unread_idx
+  on public.notifications(user_id, created_at desc, id desc)
+  where read_at is null;
+create unique index notification_email_outbox_user_dedupe_idx
+  on public.notification_email_outbox(user_id, dedupe_key)
+  where dedupe_key is not null;
+create index notification_email_outbox_pending_idx
+  on public.notification_email_outbox(next_attempt_at, created_at, id)
+  where status in ('pending', 'failed');
+
+create trigger notification_preferences_set_updated_at
+before update on public.notification_preferences
+for each row execute function public.set_updated_at();
+
+create trigger notification_email_outbox_set_updated_at
+before update on public.notification_email_outbox
+for each row execute function public.set_updated_at();
+
+create or replace function private.default_notification_delivery_mode(
+  p_category text
+)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select case
+    when p_category = 'product_updates' then 'off'
+    else 'in_app'
+  end;
+$$;
+
+create or replace function private.enqueue_user_notification(
+  p_user_id uuid,
+  p_type text,
+  p_category text,
+  p_actor_id uuid,
+  p_entity_type text,
+  p_entity_id uuid,
+  p_payload jsonb,
+  p_dedupe_key text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  delivery text;
+  queued_id uuid;
+  safe_payload jsonb := coalesce(p_payload, '{}'::jsonb);
+begin
+  if p_user_id is null then
+    return null;
+  end if;
+  if jsonb_typeof(safe_payload) <> 'object' then
+    raise exception using errcode = '22023', message = 'notification payload must be an object';
+  end if;
+
+  select preference.delivery_mode
+  into delivery
+  from public.notification_preferences preference
+  where preference.user_id = p_user_id
+    and preference.category = p_category;
+
+  delivery := coalesce(
+    delivery,
+    private.default_notification_delivery_mode(p_category)
+  );
+
+  if p_category = 'security' and delivery = 'off' then
+    delivery := 'in_app';
+  end if;
+  if delivery = 'off' then
+    return null;
+  end if;
+
+  if delivery = 'email' then
+    insert into public.notification_email_outbox (
+      user_id,
+      notification_type,
+      category,
+      actor_id,
+      entity_type,
+      entity_id,
+      payload,
+      dedupe_key
+    ) values (
+      p_user_id,
+      p_type,
+      p_category,
+      p_actor_id,
+      p_entity_type,
+      p_entity_id,
+      safe_payload,
+      p_dedupe_key
+    )
+    on conflict (user_id, dedupe_key) where dedupe_key is not null
+    do nothing
+    returning id into queued_id;
+  else
+    insert into public.notifications (
+      user_id,
+      type,
+      category,
+      actor_id,
+      entity_type,
+      entity_id,
+      payload,
+      dedupe_key
+    ) values (
+      p_user_id,
+      p_type,
+      p_category,
+      p_actor_id,
+      p_entity_type,
+      p_entity_id,
+      safe_payload,
+      p_dedupe_key
+    )
+    on conflict (user_id, dedupe_key) where dedupe_key is not null
+    do nothing
+    returning id into queued_id;
+  end if;
+
+  return queued_id;
+end;
+$$;
+
+create or replace function private.initialize_notification_preferences()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.notification_preferences (user_id, category, delivery_mode)
+  values
+    (new.id, 'collaboration', 'in_app'),
+    (new.id, 'groups', 'in_app'),
+    (new.id, 'time_capsules', 'in_app'),
+    (new.id, 'security', 'in_app'),
+    (new.id, 'product_updates', 'off')
+  on conflict (user_id, category) do nothing;
+  return new;
+end;
+$$;
+
+create trigger profiles_initialize_notification_preferences
+after insert on public.profiles
+for each row execute function private.initialize_notification_preferences();
+
+insert into public.notification_preferences (user_id, category, delivery_mode)
+select profile.id, seed.category, seed.delivery_mode
+from public.profiles profile
+cross join (
+  values
+    ('collaboration', 'in_app'),
+    ('groups', 'in_app'),
+    ('time_capsules', 'in_app'),
+    ('security', 'in_app'),
+    ('product_updates', 'off')
+) as seed(category, delivery_mode)
+on conflict (user_id, category) do nothing;
+
+create or replace function public.set_notification_preference(
+  p_category text,
+  p_delivery_mode text
+)
+returns public.notification_preferences
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  result public.notification_preferences%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if p_category not in (
+    'collaboration', 'groups', 'time_capsules', 'security', 'product_updates'
+  ) then
+    raise exception using errcode = '22023', message = 'invalid notification category';
+  end if;
+  if p_delivery_mode not in ('in_app', 'email', 'off') then
+    raise exception using errcode = '22023', message = 'invalid notification delivery mode';
+  end if;
+  if p_category = 'security' and p_delivery_mode = 'off' then
+    raise exception using errcode = '23514', message = 'security notifications cannot be disabled';
+  end if;
+
+  insert into public.notification_preferences (user_id, category, delivery_mode)
+  values (actor, p_category, p_delivery_mode)
+  on conflict (user_id, category) do update
+    set delivery_mode = excluded.delivery_mode,
+        updated_at = now()
+  returning * into result;
+
+  return result;
+end;
+$$;
+
+create or replace function public.mark_notification_read(p_notification_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if (select auth.uid()) is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  update public.notifications
+  set read_at = coalesce(read_at, now())
+  where id = p_notification_id
+    and user_id = (select auth.uid());
+  if not found then
+    raise exception using errcode = 'P0002', message = 'notification not found';
+  end if;
+end;
+$$;
+
+create or replace function public.mark_all_notifications_read()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  changed integer;
+begin
+  if (select auth.uid()) is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  update public.notifications
+  set read_at = now()
+  where user_id = (select auth.uid())
+    and read_at is null;
+  get diagnostics changed = row_count;
+  return changed;
+end;
+$$;
+
+create or replace function public.record_my_export_completed(
+  p_format text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  normalized_format text := lower(btrim(coalesce(p_format, '')));
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if normalized_format not in ('json', 'csv', 'geojson') then
+    raise exception using errcode = '22023', message = 'invalid export format';
+  end if;
+  perform private.enqueue_user_notification(
+    actor,
+    'export_completed',
+    'security',
+    null,
+    'export',
+    gen_random_uuid(),
+    jsonb_build_object(
+      'export_format', normalized_format,
+      'target_path', '/settings'
+    ),
+    'export-completed:' || actor::text || ':' || normalized_format || ':' || date_trunc('minute', now())::text
+  );
+end;
+$$;
+
+create or replace function private.notify_entry_participant_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  entry_row public.map_entries%rowtype;
+  actor uuid := (select auth.uid());
+begin
+  select * into entry_row
+  from public.map_entries
+  where id = new.entry_id;
+
+  if new.status = 'pending'
+    and (tg_op = 'INSERT' or old.status is distinct from new.status)
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'entry_invitation_received',
+      'collaboration',
+      new.invited_by,
+      'entry_participant',
+      new.entry_id,
+      jsonb_strip_nulls(jsonb_build_object(
+        'entry_title', entry_row.title,
+        'time_label', entry_row.time_label,
+        'place_name', entry_row.place_name,
+        'editable_fields', new.editable_fields,
+        'target_path', '/entry-invitations'
+      )),
+      'entry-invite:' || new.entry_id::text || ':' || new.user_id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and new.status in ('accepted', 'declined')
+    and old.status is distinct from new.status
+  then
+    perform private.enqueue_user_notification(
+      entry_row.user_id,
+      case when new.status = 'accepted'
+        then 'entry_invitation_accepted'
+        else 'entry_invitation_declined'
+      end,
+      'collaboration',
+      new.user_id,
+      'entry',
+      new.entry_id,
+      jsonb_build_object(
+        'entry_title', entry_row.title,
+        'target_path', '/entries/' || new.entry_id::text
+      ),
+      'entry-invite-response:' || new.entry_id::text || ':' || new.user_id::text || ':' || new.status || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and new.status = 'accepted'
+    and old.status = 'accepted'
+    and old.editable_fields is distinct from new.editable_fields
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'entry_permissions_changed',
+      'collaboration',
+      coalesce(actor, entry_row.user_id),
+      'entry',
+      new.entry_id,
+      jsonb_build_object(
+        'entry_title', entry_row.title,
+        'editable_fields', new.editable_fields,
+        'target_path', '/entries/' || new.entry_id::text
+      ),
+      'entry-permissions:' || new.entry_id::text || ':' || new.user_id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and new.status = 'revoked'
+    and old.status is distinct from new.status
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'entry_participant_removed',
+      'collaboration',
+      coalesce(actor, entry_row.user_id),
+      'entry_participant',
+      new.entry_id,
+      jsonb_build_object(
+        'entry_title', entry_row.title,
+        'target_path', '/entry-invitations'
+      ),
+      'entry-participant-removed:' || new.entry_id::text || ':' || new.user_id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger entry_participants_notify_change
+after insert or update of status, editable_fields on public.entry_participants
+for each row execute function private.notify_entry_participant_change();
+
+create or replace function private.notify_entry_collaborator_edit()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  entry_row public.map_entries%rowtype;
+begin
+  select * into entry_row
+  from public.map_entries
+  where id = new.entry_id;
+
+  if new.editor_id is not null and new.editor_id <> entry_row.user_id then
+    perform private.enqueue_user_notification(
+      entry_row.user_id,
+      'entry_collaborator_edited',
+      'collaboration',
+      new.editor_id,
+      'entry',
+      new.entry_id,
+      jsonb_build_object(
+        'entry_title', entry_row.title,
+        'changed_fields', new.changed_fields,
+        'target_path', '/entries/' || new.entry_id::text
+      ),
+      'entry-edit-log:' || new.id::text
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger entry_edit_logs_notify_owner
+after insert on public.entry_edit_logs
+for each row execute function private.notify_entry_collaborator_edit();
+
+create or replace function private.notify_group_invitation_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  group_row public.groups%rowtype;
+begin
+  select * into group_row from public.groups where id = new.group_id;
+
+  if new.status = 'pending' and tg_op = 'INSERT' then
+    perform private.enqueue_user_notification(
+      new.invitee_id,
+      'group_invitation_received',
+      'groups',
+      new.inviter_id,
+      'group_invitation',
+      new.id,
+      jsonb_build_object(
+        'group_name', group_row.name,
+        'group_slug', group_row.slug,
+        'target_path', '/groups/invitations'
+      ),
+      'group-invite:' || new.id::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and new.status in ('accepted', 'declined')
+    and old.status is distinct from new.status
+  then
+    perform private.enqueue_user_notification(
+      new.inviter_id,
+      case when new.status = 'accepted'
+        then 'group_invitation_accepted'
+        else 'group_invitation_declined'
+      end,
+      'groups',
+      new.invitee_id,
+      'group',
+      new.group_id,
+      jsonb_build_object(
+        'group_name', group_row.name,
+        'group_slug', group_row.slug,
+        'target_path', '/groups/' || group_row.slug
+      ),
+      'group-invite-response:' || new.id::text || ':' || new.status
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger group_invitations_notify_change
+after insert or update of status on public.group_invitations
+for each row execute function private.notify_group_invitation_change();
+
+create or replace function private.notify_group_membership_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  group_row public.groups%rowtype;
+  actor uuid := (select auth.uid());
+begin
+  select * into group_row from public.groups where id = new.group_id;
+
+  if new.status = 'active'
+    and (tg_op = 'INSERT' or old.status is distinct from new.status)
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'group_joined',
+      'groups',
+      actor,
+      'group',
+      new.group_id,
+      jsonb_build_object(
+        'group_name', group_row.name,
+        'group_slug', group_row.slug,
+        'role', new.role,
+        'target_path', '/groups/' || group_row.slug
+      ),
+      'group-joined:' || new.group_id::text || ':' || new.user_id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and new.status = 'active'
+    and old.status = 'active'
+    and old.role is distinct from new.role
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'group_role_changed',
+      'groups',
+      actor,
+      'group',
+      new.group_id,
+      jsonb_build_object(
+        'group_name', group_row.name,
+        'group_slug', group_row.slug,
+        'role', new.role,
+        'target_path', '/groups/' || group_row.slug || '/members'
+      ),
+      'group-role:' || new.group_id::text || ':' || new.user_id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+
+  if tg_op = 'UPDATE'
+    and old.status = 'active'
+    and new.status in ('left', 'removed')
+  then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'group_membership_changed',
+      'groups',
+      actor,
+      'group',
+      new.group_id,
+      jsonb_build_object(
+        'group_name', group_row.name,
+        'membership_status', new.status,
+        'target_path', '/groups'
+      ),
+      'group-membership:' || new.group_id::text || ':' || new.user_id::text || ':' || new.status || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger group_members_notify_change
+after insert or update of role, status on public.group_members
+for each row execute function private.notify_group_membership_change();
+
+create or replace function private.notify_group_archive()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  member_row record;
+begin
+  if old.archived_at is null and new.archived_at is not null then
+    for member_row in
+      select member.user_id
+      from public.group_members member
+      where member.group_id = new.id and member.status = 'active'
+    loop
+      perform private.enqueue_user_notification(
+        member_row.user_id,
+        'group_archived',
+        'groups',
+        new.archived_by,
+        'group',
+        new.id,
+        jsonb_build_object(
+          'group_name', new.name,
+          'group_slug', new.slug,
+          'target_path', '/groups/' || new.slug
+        ),
+        'group-archived:' || new.id::text
+      );
+    end loop;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger groups_notify_archive
+after update of archived_at on public.groups
+for each row execute function private.notify_group_archive();
+
+create or replace function private.notify_story_featured()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if old.featured_at is null and new.featured_at is not null then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'story_featured',
+      'collaboration',
+      null,
+      'entry',
+      new.id,
+      jsonb_build_object(
+        'entry_title', new.title,
+        'target_path', '/entries/' || new.id::text
+      ),
+      'story-featured:' || new.id::text || ':' || extract(epoch from new.featured_at)::text
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger map_entries_notify_featured
+after update of featured_at on public.map_entries
+for each row execute function private.notify_story_featured();
+
+create or replace function private.notify_story_route_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+begin
+  if actor is not null
+    and actor <> new.created_by
+    and to_jsonb(old) is distinct from to_jsonb(new)
+  then
+    perform private.enqueue_user_notification(
+      new.created_by,
+      'story_route_updated',
+      'collaboration',
+      actor,
+      'story_route',
+      new.id,
+      jsonb_build_object(
+        'route_title', new.title,
+        'share_slug', new.share_slug,
+        'target_path', '/routes/' || new.share_slug
+      ),
+      'story-route-updated:' || new.id::text || ':' || extract(epoch from new.updated_at)::text
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger story_routes_notify_external_change
+after update on public.story_routes
+for each row execute function private.notify_story_route_change();
+
+create or replace function private.handle_account_deletion_notification_data()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if old.status is distinct from new.status and new.status = 'failed' then
+    perform private.enqueue_user_notification(
+      new.user_id,
+      'account_deletion_status',
+      'security',
+      null,
+      'account',
+      new.id,
+      jsonb_build_object(
+        'deletion_status', 'failed',
+        'target_path', '/settings'
+      ),
+      'account-deletion-failed:' || new.id::text || ':' || coalesce(new.failure_code, 'unknown')
+    );
+  elsif old.status is distinct from new.status and new.status = 'completed' then
+    delete from public.notification_email_outbox where user_id = new.user_id;
+    delete from public.notifications where user_id = new.user_id;
+    delete from public.notification_preferences where user_id = new.user_id;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger account_deletion_requests_handle_notification_data
+after update of status on public.account_deletion_requests
+for each row execute function private.handle_account_deletion_notification_data();
+
+create or replace function private.sync_due_capsules_for_user(
+  p_user_id uuid,
+  p_limit integer
+)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  entry_row record;
+  queued integer := 0;
+  queued_id uuid;
+begin
+  for entry_row in
+    select entry.id, entry.title, entry.unlock_at
+    from public.map_entries entry
+    where entry.user_id = p_user_id
+      and entry.unlock_at is not null
+      and entry.unlock_at <= now()
+      and not exists (
+        select 1
+        from public.notifications notification
+        where notification.user_id = p_user_id
+          and notification.dedupe_key = 'time-capsule-unlocked:' || entry.id::text
+      )
+      and not exists (
+        select 1
+        from public.notification_email_outbox outbox
+        where outbox.user_id = p_user_id
+          and outbox.dedupe_key = 'time-capsule-unlocked:' || entry.id::text
+      )
+    order by entry.unlock_at asc, entry.id asc
+    limit least(greatest(coalesce(p_limit, 100), 1), 500)
+  loop
+    queued_id := private.enqueue_user_notification(
+      p_user_id,
+      'time_capsule_unlocked',
+      'time_capsules',
+      null,
+      'entry',
+      entry_row.id,
+      jsonb_build_object(
+        'entry_title', entry_row.title,
+        'unlock_at', entry_row.unlock_at,
+        'target_path', '/entries/' || entry_row.id::text
+      ),
+      'time-capsule-unlocked:' || entry_row.id::text
+    );
+    if queued_id is not null then
+      queued := queued + 1;
+    end if;
+  end loop;
+  return queued;
+end;
+$$;
+
+create or replace function public.sync_my_time_capsule_notifications(
+  p_limit integer default 100
+)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  return private.sync_due_capsules_for_user(actor, p_limit);
+end;
+$$;
+
+create or replace function public.sync_due_time_capsule_notifications(
+  p_limit integer default 500
+)
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  owner_row record;
+  remaining integer := least(greatest(coalesce(p_limit, 500), 1), 2000);
+  added integer := 0;
+  owner_added integer;
+begin
+  for owner_row in
+    select distinct entry.user_id
+    from public.map_entries entry
+    where entry.unlock_at is not null
+      and entry.unlock_at <= now()
+    order by entry.user_id
+  loop
+    exit when remaining <= 0;
+    owner_added := private.sync_due_capsules_for_user(owner_row.user_id, remaining);
+    added := added + owner_added;
+    remaining := remaining - owner_added;
+  end loop;
+  return added;
+end;
+$$;
+
+create or replace function public.claim_notification_email_outbox(
+  p_limit integer default 25
+)
+returns setof public.notification_email_outbox
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  return query
+  with candidates as (
+    select outbox.id
+    from public.notification_email_outbox outbox
+    where outbox.attempt_count < 20
+      and (
+        (
+          outbox.status in ('pending', 'failed')
+          and outbox.next_attempt_at <= now()
+        ) or (
+          outbox.status = 'processing'
+          and outbox.processing_started_at < now() - interval '10 minutes'
+        )
+      )
+    order by outbox.next_attempt_at asc, outbox.created_at asc, outbox.id asc
+    for update skip locked
+    limit least(greatest(coalesce(p_limit, 25), 1), 100)
+  )
+  update public.notification_email_outbox outbox
+  set status = 'processing',
+      attempt_count = least(outbox.attempt_count + 1, 20),
+      processing_started_at = now(),
+      last_error_code = null,
+      updated_at = now()
+  from candidates
+  where outbox.id = candidates.id
+  returning outbox.*;
+end;
+$$;
+
+create or replace function public.finish_notification_email_outbox(
+  p_outbox_id uuid,
+  p_sent boolean,
+  p_error_code text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.notification_email_outbox
+  set status = case when p_sent then 'sent' else 'failed' end,
+      sent_at = case when p_sent then now() else null end,
+      processing_started_at = null,
+      last_error_code = case
+        when p_sent then null
+        else left(coalesce(nullif(btrim(p_error_code), ''), 'provider_failure'), 80)
+      end,
+      next_attempt_at = case
+        when p_sent then next_attempt_at
+        else now() + least(
+          interval '6 hours',
+          interval '1 minute' * power(2, least(attempt_count, 8))::double precision
+        )
+      end,
+      updated_at = now()
+  where id = p_outbox_id and status = 'processing';
+  if not found then
+    raise exception using errcode = 'P0002', message = 'processing outbox item not found';
+  end if;
+end;
+$$;
+
+alter table public.notifications enable row level security;
+alter table public.notification_preferences enable row level security;
+alter table public.notification_email_outbox enable row level security;
+
+create policy "users_read_own_notifications"
+on public.notifications for select to authenticated
+using (user_id = (select auth.uid()));
+
+create policy "users_read_own_notification_preferences"
+on public.notification_preferences for select to authenticated
+using (user_id = (select auth.uid()));
+
+revoke all on table public.notifications from anon, authenticated;
+revoke all on table public.notification_preferences from anon, authenticated;
+revoke all on table public.notification_email_outbox from anon, authenticated;
+grant select on table public.notifications to authenticated;
+grant select on table public.notification_preferences to authenticated;
+
+revoke all on function private.default_notification_delivery_mode(text) from public, anon, authenticated;
+revoke all on function private.enqueue_user_notification(uuid, text, text, uuid, text, uuid, jsonb, text) from public, anon, authenticated;
+revoke all on function private.initialize_notification_preferences() from public, anon, authenticated;
+revoke all on function private.notify_entry_participant_change() from public, anon, authenticated;
+revoke all on function private.notify_entry_collaborator_edit() from public, anon, authenticated;
+revoke all on function private.notify_group_invitation_change() from public, anon, authenticated;
+revoke all on function private.notify_group_membership_change() from public, anon, authenticated;
+revoke all on function private.notify_group_archive() from public, anon, authenticated;
+revoke all on function private.notify_story_featured() from public, anon, authenticated;
+revoke all on function private.notify_story_route_change() from public, anon, authenticated;
+revoke all on function private.handle_account_deletion_notification_data() from public, anon, authenticated;
+revoke all on function private.sync_due_capsules_for_user(uuid, integer) from public, anon, authenticated;
+
+revoke all on function public.set_notification_preference(text, text) from public, anon, authenticated;
+revoke all on function public.mark_notification_read(uuid) from public, anon, authenticated;
+revoke all on function public.mark_all_notifications_read() from public, anon, authenticated;
+revoke all on function public.record_my_export_completed(text) from public, anon, authenticated;
+revoke all on function public.sync_my_time_capsule_notifications(integer) from public, anon, authenticated;
+revoke all on function public.sync_due_time_capsule_notifications(integer) from public, anon, authenticated;
+revoke all on function public.claim_notification_email_outbox(integer) from public, anon, authenticated;
+revoke all on function public.finish_notification_email_outbox(uuid, boolean, text) from public, anon, authenticated;
+
+grant execute on function public.set_notification_preference(text, text) to authenticated;
+grant execute on function public.mark_notification_read(uuid) to authenticated;
+grant execute on function public.mark_all_notifications_read() to authenticated;
+grant execute on function public.record_my_export_completed(text) to authenticated;
+grant execute on function public.sync_my_time_capsule_notifications(integer) to authenticated;
+grant execute on function public.sync_due_time_capsule_notifications(integer) to service_role;
+grant execute on function public.claim_notification_email_outbox(integer) to service_role;
+grant execute on function public.finish_notification_email_outbox(uuid, boolean, text) to service_role;
+
+do $$
+begin
+  if exists (
+    select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime'
+  ) and not exists (
+    select 1
+    from pg_catalog.pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notifications'
+  ) then
+    alter publication supabase_realtime add table public.notifications;
+  end if;
+end;
+$$;
+
+comment on table public.notifications is
+  'Private in-app deliveries. Payloads contain safe summaries only, never story bodies, coordinates, emails, or auth tokens.';
+comment on table public.notification_preferences is
+  'Per-user delivery mode. Security notifications cannot be fully disabled.';
+comment on table public.notification_email_outbox is
+  'Server-only email queue. A pending row means queued, not delivered.';
+comment on function public.sync_due_time_capsule_notifications(integer) is
+  'Service-role hook for a future scheduler; no scheduler is installed by this migration.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608280002_v14_story_media.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 3: private story media, quotas and cleanup.
+--
+-- Media is never public at the bucket level. Browser roles can only read a
+-- ready asset when the current request can read its parent story. All writes
+-- are reserved through owner-scoped RPCs and completed by trusted server code.
+
+do $$
+begin
+  if to_regclass('public.map_entries') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or to_regprocedure('public.set_updated_at()') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'v1.4 story media requires all migrations through 202608280001';
+  end if;
+end;
+$$;
+
+insert into storage.buckets (
+  id,
+  name,
+  public,
+  file_size_limit,
+  allowed_mime_types
+)
+values (
+  'story-media',
+  'story-media',
+  false,
+  6291456,
+  array['image/webp']::text[]
+)
+on conflict (id) do update
+set
+  public = false,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+create table if not exists public.entry_media_assets (
+  id uuid primary key default gen_random_uuid(),
+  entry_id uuid not null references public.map_entries(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  storage_path text not null unique,
+  thumbnail_path text not null unique,
+  source_mime_type text not null,
+  mime_type text not null default 'image/webp',
+  width integer not null,
+  height integer not null,
+  size_bytes bigint not null,
+  thumbnail_size_bytes bigint not null,
+  sort_order integer not null default 0,
+  is_cover boolean not null default false,
+  status text not null default 'pending',
+  failure_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint entry_media_source_mime_values
+    check (source_mime_type in ('image/jpeg', 'image/png', 'image/webp')),
+  constraint entry_media_mime_value check (mime_type = 'image/webp'),
+  constraint entry_media_dimensions
+    check (width between 1 and 20000 and height between 1 and 20000),
+  constraint entry_media_size
+    check (size_bytes between 1 and 6291456),
+  constraint entry_media_thumbnail_size
+    check (thumbnail_size_bytes between 1 and 2097152),
+  constraint entry_media_sort_order check (sort_order between 0 and 9),
+  constraint entry_media_status_values
+    check (status in ('pending', 'ready', 'failed', 'deleting', 'deleted')),
+  constraint entry_media_cover_ready
+    check (not is_cover or status = 'ready'),
+  constraint entry_media_storage_path_shape
+    check (
+      storage_path = user_id::text || '/' || entry_id::text || '/' || id::text || '.webp'
+      and thumbnail_path = user_id::text || '/' || entry_id::text || '/' || id::text || '-thumb.webp'
+    )
+);
+
+create index if not exists entry_media_assets_entry_status_sort_idx
+  on public.entry_media_assets(entry_id, status, sort_order, created_at);
+create index if not exists entry_media_assets_user_status_idx
+  on public.entry_media_assets(user_id, status, created_at desc);
+create unique index if not exists entry_media_assets_one_cover_idx
+  on public.entry_media_assets(entry_id)
+  where is_cover and status = 'ready';
+
+create table if not exists public.media_cleanup_queue (
+  id uuid primary key default gen_random_uuid(),
+  asset_id uuid unique,
+  bucket_id text not null default 'story-media',
+  object_paths text[] not null,
+  status text not null default 'pending',
+  attempt_count integer not null default 0,
+  next_attempt_at timestamptz not null default now(),
+  processing_started_at timestamptz,
+  last_error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint media_cleanup_bucket check (bucket_id = 'story-media'),
+  constraint media_cleanup_paths check (
+    cardinality(object_paths) between 1 and 2
+    and array_position(object_paths, null) is null
+  ),
+  constraint media_cleanup_status_values
+    check (status in ('pending', 'processing', 'failed')),
+  constraint media_cleanup_attempt_count check (attempt_count between 0 and 20)
+);
+
+create index if not exists media_cleanup_queue_claim_idx
+  on public.media_cleanup_queue(status, next_attempt_at, created_at);
+
+drop trigger if exists entry_media_assets_set_updated_at on public.entry_media_assets;
+create trigger entry_media_assets_set_updated_at
+before update on public.entry_media_assets
+for each row execute function public.set_updated_at();
+
+drop trigger if exists media_cleanup_queue_set_updated_at on public.media_cleanup_queue;
+create trigger media_cleanup_queue_set_updated_at
+before update on public.media_cleanup_queue
+for each row execute function public.set_updated_at();
+
+create or replace function private.story_media_quota_bytes()
+returns bigint
+language sql
+immutable
+security definer
+set search_path = ''
+as $$
+  select 524288000::bigint;
+$$;
+
+create or replace function public.reserve_entry_media_asset(
+  p_user_id uuid,
+  p_entry_id uuid,
+  p_source_mime_type text,
+  p_size_bytes bigint,
+  p_thumbnail_size_bytes bigint,
+  p_width integer,
+  p_height integer
+)
+returns public.entry_media_assets
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := p_user_id;
+  asset_id uuid := gen_random_uuid();
+  current_bytes bigint;
+  reserved public.entry_media_assets%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '22023', message = 'media owner is required';
+  end if;
+  if p_source_mime_type not in ('image/jpeg', 'image/png', 'image/webp')
+    or p_size_bytes not between 1 and 6291456
+    or p_thumbnail_size_bytes not between 1 and 2097152
+    or p_width not between 1 and 20000
+    or p_height not between 1 and 20000
+  then
+    raise exception using errcode = '22023', message = 'invalid media metadata';
+  end if;
+
+  if not exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and entry.user_id = actor
+      and (
+        entry.visibility <> 'group'
+        or exists (
+          select 1
+          from public.group_members membership
+          where membership.group_id = entry.group_id
+            and membership.user_id = actor
+            and membership.status = 'active'
+        )
+      )
+  ) then
+    raise exception using errcode = '42501', message = 'entry media owner required';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(actor::text, 8142301)
+  );
+
+  select coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint
+  into current_bytes
+  from public.entry_media_assets asset
+  where asset.user_id = actor
+    and asset.status in ('pending', 'ready');
+
+  if (
+    select count(*)
+    from public.entry_media_assets asset
+    where asset.entry_id = p_entry_id
+      and asset.status in ('pending', 'ready')
+  ) >= 10 then
+    raise exception using errcode = '23514', message = 'entry media limit reached';
+  end if;
+  if current_bytes + p_size_bytes + p_thumbnail_size_bytes
+    > private.story_media_quota_bytes()
+  then
+    raise exception using errcode = '23514', message = 'story media quota reached';
+  end if;
+
+  insert into public.entry_media_assets (
+    id,
+    entry_id,
+    user_id,
+    storage_path,
+    thumbnail_path,
+    source_mime_type,
+    width,
+    height,
+    size_bytes,
+    thumbnail_size_bytes
+  ) values (
+    asset_id,
+    p_entry_id,
+    actor,
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '.webp',
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '-thumb.webp',
+    p_source_mime_type,
+    p_width,
+    p_height,
+    p_size_bytes,
+    p_thumbnail_size_bytes
+  ) returning * into reserved;
+
+  return reserved;
+end;
+$$;
+
+create or replace function public.mark_entry_media_asset_ready(p_asset_id uuid)
+returns public.entry_media_assets
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target public.entry_media_assets%rowtype;
+begin
+  select * into target
+  from public.entry_media_assets
+  where id = p_asset_id
+  for update;
+  if not found or target.status <> 'pending' then
+    raise exception using errcode = '55000', message = 'media asset is not pending';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(target.entry_id::text, 8142302)
+  );
+
+  update public.entry_media_assets asset
+  set
+    status = 'ready',
+    failure_code = null,
+    sort_order = (
+      select coalesce(max(existing.sort_order), -1) + 1
+      from public.entry_media_assets existing
+      where existing.entry_id = target.entry_id
+        and existing.status = 'ready'
+    ),
+    is_cover = not exists (
+      select 1
+      from public.entry_media_assets existing
+      where existing.entry_id = target.entry_id
+        and existing.status = 'ready'
+        and existing.is_cover
+    )
+  where asset.id = p_asset_id
+  returning * into target;
+  return target;
+end;
+$$;
+
+create or replace function private.enqueue_media_cleanup(
+  p_asset_id uuid,
+  p_paths text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if cardinality(p_paths) not between 1 and 2
+    or array_position(p_paths, null) is not null
+  then
+    raise exception using errcode = '22023', message = 'invalid cleanup paths';
+  end if;
+
+  insert into public.media_cleanup_queue (
+    asset_id,
+    object_paths,
+    status,
+    next_attempt_at,
+    processing_started_at,
+    last_error_code
+  ) values (
+    p_asset_id,
+    p_paths,
+    'pending',
+    now(),
+    null,
+    null
+  )
+  on conflict (asset_id) do update
+  set
+    object_paths = excluded.object_paths,
+    status = 'pending',
+    next_attempt_at = now(),
+    processing_started_at = null,
+    last_error_code = null;
+end;
+$$;
+
+create or replace function public.mark_entry_media_asset_failed(
+  p_asset_id uuid,
+  p_failure_code text default 'upload_failed'
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target public.entry_media_assets%rowtype;
+begin
+  update public.entry_media_assets
+  set
+    status = 'failed',
+    is_cover = false,
+    failure_code = left(coalesce(p_failure_code, 'upload_failed'), 80)
+  where id = p_asset_id
+    and status in ('pending', 'failed')
+  returning * into target;
+  if found then
+    perform private.enqueue_media_cleanup(
+      target.id,
+      array[target.storage_path, target.thumbnail_path]
+    );
+  end if;
+end;
+$$;
+
+create or replace function public.begin_entry_media_asset_delete(p_asset_id uuid)
+returns public.entry_media_assets
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  target public.entry_media_assets%rowtype;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  update public.entry_media_assets asset
+  set status = 'deleting', is_cover = false
+  where asset.id = p_asset_id
+    and asset.user_id = actor
+    and asset.status = 'ready'
+  returning * into target;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'media asset not found';
+  end if;
+
+  if not exists (
+    select 1 from public.entry_media_assets asset
+    where asset.entry_id = target.entry_id
+      and asset.status = 'ready'
+      and asset.is_cover
+  ) then
+    update public.entry_media_assets asset
+    set is_cover = true
+    where asset.id = (
+      select candidate.id
+      from public.entry_media_assets candidate
+      where candidate.entry_id = target.entry_id
+        and candidate.status = 'ready'
+      order by candidate.sort_order, candidate.created_at
+      limit 1
+    );
+  end if;
+
+  perform private.enqueue_media_cleanup(
+    target.id,
+    array[target.storage_path, target.thumbnail_path]
+  );
+  return target;
+end;
+$$;
+
+create or replace function public.set_entry_media_cover(
+  p_entry_id uuid,
+  p_asset_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if not exists (
+    select 1
+    from public.entry_media_assets asset
+    where asset.id = p_asset_id
+      and asset.entry_id = p_entry_id
+      and asset.user_id = actor
+      and asset.status = 'ready'
+  ) then
+    raise exception using errcode = 'P0002', message = 'media asset not found';
+  end if;
+
+  update public.entry_media_assets
+  set is_cover = false
+  where entry_id = p_entry_id
+    and user_id = actor
+    and status = 'ready';
+  update public.entry_media_assets
+  set is_cover = true
+  where id = p_asset_id;
+end;
+$$;
+
+create or replace function public.reorder_entry_media_assets(
+  p_entry_id uuid,
+  p_asset_ids uuid[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  ready_count integer;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+  if cardinality(p_asset_ids) not between 1 and 10
+    or (select count(distinct value) from unnest(p_asset_ids) value)
+      <> cardinality(p_asset_ids)
+  then
+    raise exception using errcode = '22023', message = 'invalid media order';
+  end if;
+
+  select count(*)::integer into ready_count
+  from public.entry_media_assets asset
+  where asset.entry_id = p_entry_id
+    and asset.user_id = actor
+    and asset.status = 'ready';
+  if ready_count <> cardinality(p_asset_ids)
+    or exists (
+      select 1
+      from unnest(p_asset_ids) value
+      where not exists (
+        select 1
+        from public.entry_media_assets asset
+        where asset.id = value
+          and asset.entry_id = p_entry_id
+          and asset.user_id = actor
+          and asset.status = 'ready'
+      )
+    )
+  then
+    raise exception using errcode = '42501', message = 'media order is incomplete';
+  end if;
+
+  update public.entry_media_assets asset
+  set sort_order = (ordering.position - 1)::integer
+  from unnest(p_asset_ids) with ordinality ordering(asset_id, position)
+  where asset.id = ordering.asset_id;
+end;
+$$;
+
+create or replace function public.get_my_story_media_usage()
+returns table (
+  used_bytes bigint,
+  quota_bytes bigint,
+  file_count integer
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint,
+    private.story_media_quota_bytes(),
+    count(*)::integer
+  from public.entry_media_assets asset
+  where asset.user_id = (select auth.uid())
+    and asset.status in ('pending', 'ready');
+$$;
+
+create or replace function private.queue_deleted_entry_media_asset()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if old.status <> 'deleted' then
+    perform private.enqueue_media_cleanup(
+      old.id,
+      array[old.storage_path, old.thumbnail_path]
+    );
+  end if;
+  return old;
+end;
+$$;
+
+drop trigger if exists entry_media_assets_queue_delete on public.entry_media_assets;
+create trigger entry_media_assets_queue_delete
+before delete on public.entry_media_assets
+for each row execute function private.queue_deleted_entry_media_asset();
+
+create or replace function public.claim_story_media_cleanup(p_limit integer default 25)
+returns setof public.media_cleanup_queue
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_limit not between 1 and 100 then
+    raise exception using errcode = '22023', message = 'invalid cleanup limit';
+  end if;
+
+  insert into public.media_cleanup_queue (asset_id, object_paths)
+  select
+    asset.id,
+    array[asset.storage_path, asset.thumbnail_path]
+  from public.entry_media_assets asset
+  where asset.status = 'failed'
+    or (asset.status = 'pending' and asset.created_at < now() - interval '1 hour')
+  on conflict (asset_id) do nothing;
+
+  return query
+  with candidates as (
+    select queue.id
+    from public.media_cleanup_queue queue
+    where queue.next_attempt_at <= now()
+      and queue.attempt_count < 20
+      and (
+        queue.status in ('pending', 'failed')
+        or (
+          queue.status = 'processing'
+          and queue.processing_started_at < now() - interval '15 minutes'
+        )
+      )
+    order by queue.created_at
+    for update skip locked
+    limit p_limit
+  )
+  update public.media_cleanup_queue queue
+  set
+    status = 'processing',
+    processing_started_at = now(),
+    attempt_count = queue.attempt_count + 1
+  from candidates
+  where queue.id = candidates.id
+  returning queue.*;
+end;
+$$;
+
+create or replace function public.finish_story_media_cleanup(
+  p_queue_id uuid,
+  p_succeeded boolean,
+  p_error_code text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target public.media_cleanup_queue%rowtype;
+begin
+  select * into target
+  from public.media_cleanup_queue
+  where id = p_queue_id
+  for update;
+  if not found or target.status <> 'processing' then
+    raise exception using errcode = 'P0002', message = 'cleanup item not found';
+  end if;
+
+  if p_succeeded then
+    if target.asset_id is not null then
+      update public.entry_media_assets
+      set status = 'deleted', is_cover = false
+      where id = target.asset_id;
+      delete from public.entry_media_assets where id = target.asset_id;
+    end if;
+    delete from public.media_cleanup_queue where id = p_queue_id;
+  else
+    update public.media_cleanup_queue
+    set
+      status = 'failed',
+      processing_started_at = null,
+      last_error_code = left(coalesce(p_error_code, 'storage_remove_failed'), 80),
+      next_attempt_at = now() + pg_catalog.make_interval(
+        secs => least(3600, 30 * (2 ^ least(attempt_count, 7)))::integer
+      )
+    where id = p_queue_id;
+  end if;
+end;
+$$;
+
+create or replace function public.complete_entry_media_asset_delete(p_asset_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  update public.entry_media_assets
+  set status = 'deleted', is_cover = false
+  where id = p_asset_id
+    and status in ('pending', 'failed', 'deleting');
+  delete from public.entry_media_assets where id = p_asset_id;
+  delete from public.media_cleanup_queue where asset_id = p_asset_id;
+end;
+$$;
+
+alter table public.entry_media_assets enable row level security;
+alter table public.media_cleanup_queue enable row level security;
+
+drop policy if exists entry_media_assets_authorized_select on public.entry_media_assets;
+create policy entry_media_assets_authorized_select
+on public.entry_media_assets for select to anon, authenticated
+using (
+  status = 'ready'
+  and public.can_read_entry(entry_id)
+);
+
+drop policy if exists story_media_objects_authorized_select on storage.objects;
+create policy story_media_objects_authorized_select
+on storage.objects for select to anon, authenticated
+using (
+  bucket_id = 'story-media'
+  and exists (
+    select 1
+    from public.entry_media_assets asset
+    where asset.status = 'ready'
+      and (asset.storage_path = name or asset.thumbnail_path = name)
+      and public.can_read_entry(asset.entry_id)
+  )
+);
+
+revoke all on table public.entry_media_assets from public, anon, authenticated;
+grant select on table public.entry_media_assets to anon, authenticated;
+revoke all on table public.media_cleanup_queue from public, anon, authenticated;
+grant select, insert, update, delete on table public.media_cleanup_queue to service_role;
+
+revoke all on function private.story_media_quota_bytes() from public, anon, authenticated;
+revoke all on function private.enqueue_media_cleanup(uuid, text[]) from public, anon, authenticated;
+revoke all on function private.queue_deleted_entry_media_asset() from public, anon, authenticated;
+
+revoke all on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+from public, anon, authenticated;
+revoke all on function public.mark_entry_media_asset_ready(uuid)
+from public, anon, authenticated;
+revoke all on function public.mark_entry_media_asset_failed(uuid, text)
+from public, anon, authenticated;
+revoke all on function public.begin_entry_media_asset_delete(uuid)
+from public, anon, authenticated;
+revoke all on function public.set_entry_media_cover(uuid, uuid)
+from public, anon, authenticated;
+revoke all on function public.reorder_entry_media_assets(uuid, uuid[])
+from public, anon, authenticated;
+revoke all on function public.get_my_story_media_usage()
+from public, anon, authenticated;
+revoke all on function public.claim_story_media_cleanup(integer)
+from public, anon, authenticated;
+revoke all on function public.finish_story_media_cleanup(uuid, boolean, text)
+from public, anon, authenticated;
+revoke all on function public.complete_entry_media_asset_delete(uuid)
+from public, anon, authenticated;
+
+grant execute on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+to service_role;
+grant execute on function public.begin_entry_media_asset_delete(uuid)
+to authenticated;
+grant execute on function public.set_entry_media_cover(uuid, uuid)
+to authenticated;
+grant execute on function public.reorder_entry_media_assets(uuid, uuid[])
+to authenticated;
+grant execute on function public.get_my_story_media_usage()
+to authenticated;
+
+grant execute on function public.mark_entry_media_asset_ready(uuid)
+to service_role;
+grant execute on function public.mark_entry_media_asset_failed(uuid, text)
+to service_role;
+grant execute on function public.claim_story_media_cleanup(integer)
+to service_role;
+grant execute on function public.finish_story_media_cleanup(uuid, boolean, text)
+to service_role;
+grant execute on function public.complete_entry_media_asset_delete(uuid)
+to service_role;
+
+comment on table public.entry_media_assets is
+  'Private-bucket story images. Only ready assets whose parent entry passes can_read_entry are visible.';
+comment on table public.media_cleanup_queue is
+  'Service-only durable queue for removing Storage objects after failures, explicit deletes or cascading story/account deletion.';
+comment on function public.get_my_story_media_usage() is
+  'Returns the caller media usage and the temporary v1.4 500 MiB entitlement ceiling.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 20260828102358_v14_rate_limit_clock_fix.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 1 follow-up: PostgreSQL 17 treats
+-- `current_time` as the SQL CURRENT_TIME keyword inside the INSERT statement.
+-- Keep the already-applied migration immutable and replace only the function
+-- body with an unambiguous PL/pgSQL variable name.
+
+create or replace function public.consume_server_rate_limit(
+  p_scope text,
+  p_key_hash text,
+  p_limit integer,
+  p_window_seconds integer
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds integer,
+  remaining integer
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_now timestamptz := clock_timestamp();
+  bucket private.rate_limit_buckets%rowtype;
+  window_duration interval;
+begin
+  if p_scope is null or char_length(p_scope) not between 1 and 80 then
+    raise exception using errcode = '22023', message = 'invalid rate limit scope';
+  end if;
+  if p_key_hash is null or p_key_hash !~ '^[0-9a-f]{64}$' then
+    raise exception using errcode = '22023', message = 'invalid rate limit key';
+  end if;
+  if p_limit not between 1 and 10000 then
+    raise exception using errcode = '22023', message = 'invalid rate limit size';
+  end if;
+  if p_window_seconds not between 1 and 86400 then
+    raise exception using errcode = '22023', message = 'invalid rate limit window';
+  end if;
+
+  window_duration := pg_catalog.make_interval(secs => p_window_seconds);
+
+  insert into private.rate_limit_buckets as existing (
+    scope,
+    key_hash,
+    window_started_at,
+    request_count,
+    updated_at
+  )
+  values (p_scope, p_key_hash, v_now, 1, v_now)
+  on conflict (scope, key_hash) do update
+  set
+    window_started_at = case
+      when existing.window_started_at <= v_now - window_duration
+        then v_now
+      else existing.window_started_at
+    end,
+    request_count = case
+      when existing.window_started_at <= v_now - window_duration
+        then 1
+      else existing.request_count + 1
+    end,
+    updated_at = v_now
+  returning * into bucket;
+
+  allowed := bucket.request_count <= p_limit;
+  remaining := pg_catalog.greatest(p_limit - bucket.request_count, 0);
+  retry_after_seconds := case
+    when allowed then 0
+    else pg_catalog.greatest(
+      1,
+      pg_catalog.ceil(
+        extract(epoch from bucket.window_started_at + window_duration - v_now)
+      )::integer
+    )
+  end;
+  return next;
+end;
+$$;
+
+revoke all on function public.consume_server_rate_limit(text, text, integer, integer)
+from public, anon, authenticated;
+grant execute on function public.consume_server_rate_limit(text, text, integer, integer)
+to service_role;
+
+comment on function public.consume_server_rate_limit(text, text, integer, integer)
+is 'Atomically consumes a fixed-window bucket for trusted server routes; identifiers must be HMAC hashed before calling.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 20260828102558_v14_rate_limit_builtin_fix.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 1 follow-up: GREATEST is SQL syntax rather than
+-- a pg_catalog function, so schema-qualifying it fails on PostgreSQL 17.
+
+create or replace function public.consume_server_rate_limit(
+  p_scope text,
+  p_key_hash text,
+  p_limit integer,
+  p_window_seconds integer
+)
+returns table (
+  allowed boolean,
+  retry_after_seconds integer,
+  remaining integer
+)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_now timestamptz := clock_timestamp();
+  bucket private.rate_limit_buckets%rowtype;
+  window_duration interval;
+begin
+  if p_scope is null or char_length(p_scope) not between 1 and 80 then
+    raise exception using errcode = '22023', message = 'invalid rate limit scope';
+  end if;
+  if p_key_hash is null or p_key_hash !~ '^[0-9a-f]{64}$' then
+    raise exception using errcode = '22023', message = 'invalid rate limit key';
+  end if;
+  if p_limit not between 1 and 10000 then
+    raise exception using errcode = '22023', message = 'invalid rate limit size';
+  end if;
+  if p_window_seconds not between 1 and 86400 then
+    raise exception using errcode = '22023', message = 'invalid rate limit window';
+  end if;
+
+  window_duration := pg_catalog.make_interval(secs => p_window_seconds);
+
+  insert into private.rate_limit_buckets as existing (
+    scope,
+    key_hash,
+    window_started_at,
+    request_count,
+    updated_at
+  )
+  values (p_scope, p_key_hash, v_now, 1, v_now)
+  on conflict (scope, key_hash) do update
+  set
+    window_started_at = case
+      when existing.window_started_at <= v_now - window_duration
+        then v_now
+      else existing.window_started_at
+    end,
+    request_count = case
+      when existing.window_started_at <= v_now - window_duration
+        then 1
+      else existing.request_count + 1
+    end,
+    updated_at = v_now
+  returning * into bucket;
+
+  allowed := bucket.request_count <= p_limit;
+  remaining := greatest(p_limit - bucket.request_count, 0);
+  retry_after_seconds := case
+    when allowed then 0
+    else greatest(
+      1,
+      pg_catalog.ceil(
+        extract(epoch from bucket.window_started_at + window_duration - v_now)
+      )::integer
+    )
+  end;
+  return next;
+end;
+$$;
+
+revoke all on function public.consume_server_rate_limit(text, text, integer, integer)
+from public, anon, authenticated;
+grant execute on function public.consume_server_rate_limit(text, text, integer, integer)
+to service_role;
+
+comment on function public.consume_server_rate_limit(text, text, integer, integer)
+is 'Atomically consumes a fixed-window bucket for trusted server routes; identifiers must be HMAC hashed before calling.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608290001_v14_governance.sql
+-- ============================================================
+-- Story-and-Place v1.4 Phase 4: governance, moderation and account restriction.
+-- This migration is additive. It never exposes private story bodies to admins.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.story_routes') is null
+    or to_regclass('public.reports') is null
+    or to_regprocedure('public.can_read_entry(uuid)') is null
+    or to_regprocedure('public.can_view_story_route(uuid)') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'governance requires all migrations through v1.4 story media';
+  end if;
+end;
+$$;
+
+create table if not exists public.app_admins (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  role text not null default 'admin',
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  constraint app_admins_role_values check (role in ('admin'))
+);
+
+create table if not exists public.account_moderation (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  status text not null default 'active',
+  reason text not null default '',
+  restricted_at timestamptz,
+  restricted_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  constraint account_moderation_status_values check (status in ('active', 'restricted')),
+  constraint account_moderation_reason_length check (char_length(reason) <= 500),
+  constraint account_moderation_restricted_state check (
+    (status = 'active' and restricted_at is null and restricted_by is null)
+    or (status = 'restricted' and restricted_at is not null and restricted_by is not null)
+  )
+);
+
+create table if not exists public.moderation_audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  admin_user_id uuid references public.profiles(id) on delete set null,
+  action text not null,
+  target_type text not null,
+  target_id uuid not null,
+  report_id uuid references public.reports(id) on delete set null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint moderation_audit_action_length check (char_length(action) between 1 and 80),
+  constraint moderation_audit_target_values check (
+    target_type in ('entry', 'route', 'user', 'report')
+  ),
+  constraint moderation_audit_metadata_object check (jsonb_typeof(metadata) = 'object')
+);
+
+alter table public.map_entries
+  add column if not exists moderation_status text not null default 'active',
+  add column if not exists moderated_at timestamptz,
+  add column if not exists moderated_by uuid references public.profiles(id) on delete set null,
+  add column if not exists moderation_reason text not null default '';
+
+alter table public.story_routes
+  add column if not exists moderation_status text not null default 'active',
+  add column if not exists moderated_at timestamptz,
+  add column if not exists moderated_by uuid references public.profiles(id) on delete set null,
+  add column if not exists moderation_reason text not null default '';
+
+alter table public.map_entries
+  drop constraint if exists map_entries_moderation_status_values,
+  add constraint map_entries_moderation_status_values
+    check (moderation_status in ('active', 'restricted', 'removed')),
+  drop constraint if exists map_entries_moderation_reason_length,
+  add constraint map_entries_moderation_reason_length
+    check (char_length(moderation_reason) <= 500),
+  drop constraint if exists map_entries_moderation_state_consistent,
+  add constraint map_entries_moderation_state_consistent check (
+    (moderation_status = 'active' and moderated_at is null and moderated_by is null)
+    or (moderation_status <> 'active' and moderated_at is not null and moderated_by is not null)
+  );
+
+alter table public.story_routes
+  drop constraint if exists story_routes_moderation_status_values,
+  add constraint story_routes_moderation_status_values
+    check (moderation_status in ('active', 'restricted', 'removed')),
+  drop constraint if exists story_routes_moderation_reason_length,
+  add constraint story_routes_moderation_reason_length
+    check (char_length(moderation_reason) <= 500),
+  drop constraint if exists story_routes_moderation_state_consistent,
+  add constraint story_routes_moderation_state_consistent check (
+    (moderation_status = 'active' and moderated_at is null and moderated_by is null)
+    or (moderation_status <> 'active' and moderated_at is not null and moderated_by is not null)
+  );
+
+alter table public.reports
+  drop constraint if exists reports_target_type_values,
+  add constraint reports_target_type_values
+    check (target_type in ('entry', 'comment', 'user', 'group', 'route')),
+  drop constraint if exists reports_reason_values,
+  add constraint reports_reason_values check (
+    reason in (
+      'spam', 'harassment', 'hate', 'privacy', 'misinformation',
+      'copyright', 'inappropriate', 'other'
+    )
+  );
+
+create index if not exists account_moderation_restricted_idx
+  on public.account_moderation(updated_at desc, user_id)
+  where status = 'restricted';
+create index if not exists moderation_audit_logs_created_idx
+  on public.moderation_audit_logs(created_at desc, id desc);
+create index if not exists reports_open_queue_idx
+  on public.reports(created_at desc, id desc)
+  where status in ('pending', 'reviewing');
+create index if not exists map_entries_moderation_idx
+  on public.map_entries(moderation_status, updated_at desc, id desc)
+  where moderation_status <> 'active';
+create index if not exists story_routes_moderation_idx
+  on public.story_routes(moderation_status, updated_at desc, id desc)
+  where moderation_status <> 'active';
+
+create or replace function public.is_app_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null and exists (
+    select 1
+    from public.app_admins administrator
+    where administrator.user_id = (select auth.uid())
+      and administrator.role = 'admin'
+  );
+$$;
+
+create or replace function public.is_account_restricted(p_user_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce((
+    select moderation.status = 'restricted'
+    from public.account_moderation moderation
+    where moderation.user_id = p_user_id
+  ), false);
+$$;
+
+create or replace function private.assert_app_admin()
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare actor uuid := (select auth.uid());
+begin
+  if actor is null or not public.is_app_admin() then
+    raise exception using errcode = '42501', message = 'application administrator required';
+  end if;
+  return actor;
+end;
+$$;
+
+alter table public.app_admins enable row level security;
+alter table public.account_moderation enable row level security;
+alter table public.moderation_audit_logs enable row level security;
+
+drop policy if exists app_admins_admin_read on public.app_admins;
+create policy app_admins_admin_read
+on public.app_admins for select to authenticated
+using (public.is_app_admin());
+
+drop policy if exists account_moderation_admin_read on public.account_moderation;
+create policy account_moderation_admin_read
+on public.account_moderation for select to authenticated
+using (public.is_app_admin());
+
+drop policy if exists moderation_audit_admin_read on public.moderation_audit_logs;
+create policy moderation_audit_admin_read
+on public.moderation_audit_logs for select to authenticated
+using (public.is_app_admin());
+
+-- Restricted profiles disappear from public discovery. The owner may still
+-- open settings and an administrator may see public profile fields only.
+drop policy if exists profiles_are_publicly_readable on public.profiles;
+create policy profiles_are_publicly_readable
+on public.profiles for select to anon, authenticated
+using (
+  not public.is_account_restricted(id)
+  or id = (select auth.uid())
+  or public.is_app_admin()
+);
+
+create or replace function public.can_read_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.map_entries entry
+    where entry.id = p_entry_id
+      and (
+        (
+          entry.user_id = (select auth.uid())
+          and (
+            entry.visibility <> 'group'
+            or public.is_active_group_member(entry.group_id)
+          )
+        )
+        or (
+          entry.moderation_status = 'active'
+          and not public.is_account_restricted(entry.user_id)
+          and (entry.unlock_at is null or entry.unlock_at <= now())
+          and (
+            entry.visibility = 'public'
+            or (
+              entry.visibility = 'private'
+              and exists (
+                select 1 from public.entry_participants participant
+                where participant.entry_id = entry.id
+                  and participant.user_id = (select auth.uid())
+                  and participant.status = 'accepted'
+              )
+            )
+            or (
+              entry.visibility = 'group'
+              and public.is_active_group_member(entry.group_id)
+            )
+          )
+        )
+        or (
+          public.is_app_admin()
+          and entry.visibility = 'public'
+          and (entry.unlock_at is null or entry.unlock_at <= now())
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_collaborate_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null
+    and not public.is_account_restricted((select auth.uid()))
+    and exists (
+      select 1 from public.map_entries entry
+      where entry.id = p_entry_id
+        and entry.moderation_status = 'active'
+        and not public.is_account_restricted(entry.user_id)
+        and (entry.visibility <> 'group' or public.is_active_group_member(entry.group_id))
+        and (
+          entry.user_id = (select auth.uid())
+          or (
+            (entry.unlock_at is null or entry.unlock_at <= now())
+            and exists (
+              select 1 from public.entry_participants participant
+              where participant.entry_id = entry.id
+                and participant.user_id = (select auth.uid())
+                and participant.status = 'accepted'
+            )
+          )
+        )
+    );
+$$;
+
+create or replace function public.can_edit_entry_field(p_entry_id uuid, p_field text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null
+    and not public.is_account_restricted((select auth.uid()))
+    and exists (
+      select 1 from public.map_entries entry
+      where entry.id = p_entry_id
+        and entry.moderation_status = 'active'
+        and not public.is_account_restricted(entry.user_id)
+        and (entry.visibility <> 'group' or public.is_active_group_member(entry.group_id))
+        and (
+          entry.user_id = (select auth.uid())
+          or (
+            (entry.unlock_at is null or entry.unlock_at <= now())
+            and exists (
+              select 1 from public.entry_participants participant
+              where participant.entry_id = entry.id
+                and participant.user_id = (select auth.uid())
+                and participant.status = 'accepted'
+                and p_field = any(participant.editable_fields)
+            )
+          )
+        )
+    );
+$$;
+
+create or replace function public.can_interact_entry(p_entry_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null
+    and not public.is_account_restricted((select auth.uid()))
+    and exists (
+      select 1 from public.map_entries entry
+      where entry.id = p_entry_id
+        and entry.moderation_status = 'active'
+        and not public.is_account_restricted(entry.user_id)
+        and (entry.unlock_at is null or entry.unlock_at <= now())
+        and entry.visibility in ('public', 'group')
+        and public.can_read_entry(entry.id)
+    );
+$$;
+
+create or replace function public.can_read_entry_edit_log(
+  p_entry_id uuid,
+  p_created_at timestamptz
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null
+    and public.can_read_entry(p_entry_id)
+    and exists (
+      select 1 from public.map_entries entry
+      where entry.id = p_entry_id
+        and (
+          entry.user_id = (select auth.uid())
+          or (
+            entry.moderation_status = 'active'
+            and not public.is_account_restricted(entry.user_id)
+            and exists (
+              select 1 from public.entry_participants participant
+              where participant.entry_id = entry.id
+                and participant.user_id = (select auth.uid())
+                and participant.status = 'accepted'
+                and participant.responded_at <= p_created_at
+            )
+          )
+        )
+    );
+$$;
+
+create or replace function public.can_view_story_route(p_route_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.story_routes route
+    where route.id = p_route_id
+      and (
+        route.created_by = (select auth.uid())
+        or (
+          route.moderation_status = 'active'
+          and not public.is_account_restricted(route.created_by)
+          and route.published_at is not null
+          and route.archived_at is null
+          and (
+            route.visibility = 'public'
+            or (
+              route.visibility = 'group'
+              and public.is_active_group_member(route.group_id)
+            )
+          )
+        )
+        or (
+          public.is_app_admin()
+          and route.visibility = 'public'
+          and route.published_at is not null
+        )
+      )
+  );
+$$;
+
+create or replace function public.can_report_target(p_target_type text, p_target_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select (select auth.uid()) is not null
+    and not public.is_account_restricted((select auth.uid()))
+    and case p_target_type
+      when 'entry' then exists (
+        select 1 from public.map_entries entry
+        where entry.id = p_target_id
+          and entry.visibility = 'public'
+          and entry.moderation_status = 'active'
+          and (entry.unlock_at is null or entry.unlock_at <= now())
+          and public.can_read_entry(entry.id)
+      )
+      when 'comment' then exists (
+        select 1 from public.entry_comments comment
+        join public.map_entries entry on entry.id = comment.entry_id
+        where comment.id = p_target_id
+          and comment.deleted_at is null
+          and entry.visibility in ('public', 'group')
+          and public.can_read_entry(entry.id)
+      )
+      when 'user' then exists (
+        select 1 from public.profiles profile
+        where profile.id = p_target_id
+          and profile.id <> (select auth.uid())
+          and profile.deleted_at is null
+          and not public.is_account_restricted(profile.id)
+      )
+      when 'group' then exists (
+        select 1 from public.groups target_group
+        where target_group.id = p_target_id
+          and target_group.archived_at is null
+          and (
+            target_group.visibility = 'public'
+            or public.is_active_group_member(target_group.id)
+          )
+      )
+      when 'route' then exists (
+        select 1 from public.story_routes route
+        where route.id = p_target_id
+          and route.visibility = 'public'
+          and route.moderation_status = 'active'
+          and route.published_at is not null
+          and route.archived_at is null
+          and public.can_view_story_route(route.id)
+      )
+      else false
+    end;
+$$;
+
+-- Restriction is enforced at the database boundary for the main user-created
+-- resources. Service-role maintenance has no auth.uid() and remains available.
+create or replace function private.enforce_unrestricted_actor()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare actor uuid := (select auth.uid());
+begin
+  if actor is not null and public.is_account_restricted(actor) then
+    raise exception using errcode = '42501', message = 'account is restricted';
+  end if;
+  return null;
+end;
+$$;
+
+do $$
+declare relation_name text;
+begin
+  foreach relation_name in array array[
+    'profiles', 'map_entries', 'story_routes', 'story_route_items',
+    'groups', 'group_members', 'group_invitations', 'follows',
+    'entry_likes', 'entry_comments', 'reports', 'entry_participants',
+    'tags', 'entry_tags', 'entry_drafts'
+  ] loop
+    if to_regclass('public.' || relation_name) is not null then
+      execute format('drop trigger if exists %I on public.%I',
+        relation_name || '_reject_restricted_actor', relation_name);
+      execute format(
+        'create trigger %I before insert or update or delete on public.%I for each statement execute function private.enforce_unrestricted_actor()',
+        relation_name || '_reject_restricted_actor', relation_name
+      );
+    end if;
+  end loop;
+end;
+$$;
+
+-- Media reservation is a service-role RPC, so it must validate the supplied
+-- owner explicitly instead of relying on auth.uid().
+create or replace function public.reserve_entry_media_asset(
+  p_user_id uuid,
+  p_entry_id uuid,
+  p_source_mime_type text,
+  p_size_bytes bigint,
+  p_thumbnail_size_bytes bigint,
+  p_width integer,
+  p_height integer
+)
+returns public.entry_media_assets
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := p_user_id;
+  asset_id uuid := gen_random_uuid();
+  current_bytes bigint;
+  reserved public.entry_media_assets%rowtype;
+begin
+  if actor is null or public.is_account_restricted(actor) then
+    raise exception using errcode = '42501', message = 'media owner unavailable';
+  end if;
+  if p_source_mime_type not in ('image/jpeg', 'image/png', 'image/webp')
+    or p_size_bytes not between 1 and 6291456
+    or p_thumbnail_size_bytes not between 1 and 2097152
+    or p_width not between 1 and 20000
+    or p_height not between 1 and 20000
+  then
+    raise exception using errcode = '22023', message = 'invalid media metadata';
+  end if;
+  if not exists (
+    select 1 from public.map_entries entry
+    where entry.id = p_entry_id
+      and entry.user_id = actor
+      and entry.moderation_status = 'active'
+      and (
+        entry.visibility <> 'group'
+        or exists (
+          select 1 from public.group_members membership
+          where membership.group_id = entry.group_id
+            and membership.user_id = actor
+            and membership.status = 'active'
+        )
+      )
+  ) then
+    raise exception using errcode = '42501', message = 'entry media owner required';
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(actor::text, 8142301));
+  select coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint
+  into current_bytes
+  from public.entry_media_assets asset
+  where asset.user_id = actor and asset.status in ('pending', 'ready');
+  if (
+    select count(*) from public.entry_media_assets asset
+    where asset.entry_id = p_entry_id and asset.status in ('pending', 'ready')
+  ) >= 10 then
+    raise exception using errcode = '23514', message = 'entry media limit reached';
+  end if;
+  if current_bytes + p_size_bytes + p_thumbnail_size_bytes > private.story_media_quota_bytes() then
+    raise exception using errcode = '23514', message = 'story media quota reached';
+  end if;
+  insert into public.entry_media_assets (
+    id, entry_id, user_id, storage_path, thumbnail_path, source_mime_type,
+    width, height, size_bytes, thumbnail_size_bytes
+  ) values (
+    asset_id, p_entry_id, actor,
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '.webp',
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '-thumb.webp',
+    p_source_mime_type, p_width, p_height, p_size_bytes, p_thumbnail_size_bytes
+  ) returning * into reserved;
+  return reserved;
+end;
+$$;
+
+create or replace function public.maintain_map_entry_featured_state()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  if new.visibility <> 'public'
+    or new.moderation_status <> 'active'
+    or (new.unlock_at is not null and new.unlock_at > now())
+  then
+    new.featured_at := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists map_entries_maintain_featured_state on public.map_entries;
+create trigger map_entries_maintain_featured_state
+before insert or update of visibility, unlock_at, featured_at, moderation_status
+on public.map_entries
+for each row execute function public.maintain_map_entry_featured_state();
+
+revoke insert (moderation_status, moderated_at, moderated_by, moderation_reason)
+on public.map_entries from authenticated;
+revoke update (moderation_status, moderated_at, moderated_by, moderation_reason)
+on public.map_entries from authenticated;
+revoke insert (moderation_status, moderated_at, moderated_by, moderation_reason)
+on public.story_routes from authenticated;
+revoke update (moderation_status, moderated_at, moderated_by, moderation_reason)
+on public.story_routes from authenticated;
+
+revoke all on table public.app_admins from public, anon, authenticated;
+revoke all on table public.account_moderation from public, anon, authenticated;
+revoke all on table public.moderation_audit_logs from public, anon, authenticated;
+grant select on public.app_admins to authenticated;
+grant select on public.account_moderation to authenticated;
+grant select on public.moderation_audit_logs to authenticated;
+
+revoke all on function public.is_app_admin() from public;
+grant execute on function public.is_app_admin() to anon, authenticated;
+revoke all on function public.is_account_restricted(uuid) from public;
+grant execute on function public.is_account_restricted(uuid) to anon, authenticated;
+revoke all on function private.assert_app_admin() from public, anon, authenticated;
+revoke all on function private.enforce_unrestricted_actor() from public, anon, authenticated;
+revoke all on function public.can_read_entry(uuid) from public;
+revoke all on function public.can_collaborate_entry(uuid) from public;
+revoke all on function public.can_edit_entry_field(uuid, text) from public;
+revoke all on function public.can_interact_entry(uuid) from public;
+revoke all on function public.can_read_entry_edit_log(uuid, timestamptz) from public;
+revoke all on function public.can_view_story_route(uuid) from public;
+revoke all on function public.can_report_target(text, uuid) from public, anon;
+grant execute on function public.can_read_entry(uuid) to anon, authenticated;
+grant execute on function public.can_collaborate_entry(uuid) to authenticated;
+grant execute on function public.can_edit_entry_field(uuid, text) to authenticated;
+grant execute on function public.can_interact_entry(uuid) to authenticated;
+grant execute on function public.can_read_entry_edit_log(uuid, timestamptz) to authenticated;
+grant execute on function public.can_view_story_route(uuid) to anon, authenticated;
+grant execute on function public.can_report_target(text, uuid) to authenticated;
+revoke all on function public.maintain_map_entry_featured_state()
+from public, anon, authenticated;
+revoke all on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+from public, anon, authenticated;
+grant execute on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+to service_role;
+
+create or replace function public.admin_get_dashboard()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  perform private.assert_app_admin();
+  select jsonb_build_object(
+    'total_users', (select count(*) from public.profiles where deleted_at is null),
+    'recent_users_7d', (select count(*) from public.profiles where deleted_at is null and created_at >= now() - interval '7 days'),
+    'active_users_30d', (select count(*) from auth.users where last_sign_in_at >= now() - interval '30 days'),
+    'restricted_users', (select count(*) from public.account_moderation where status = 'restricted'),
+    'total_entries', (select count(*) from public.map_entries),
+    'public_entries', (select count(*) from public.map_entries where visibility = 'public'),
+    'private_entries', (select count(*) from public.map_entries where visibility = 'private'),
+    'group_entries', (select count(*) from public.map_entries where visibility = 'group'),
+    'moderated_entries', (select count(*) from public.map_entries where moderation_status <> 'active'),
+    'story_routes', (select count(*) from public.story_routes),
+    'groups', (select count(*) from public.groups),
+    'pending_reports', (select count(*) from public.reports where status in ('pending', 'reviewing'))
+  ) into result;
+  return result;
+end;
+$$;
+
+create or replace function public.admin_list_users(
+  p_query text default null,
+  p_offset integer default 0,
+  p_limit integer default 25
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  perform private.assert_app_admin();
+  with matched as (
+    select
+      profile.id,
+      profile.username,
+      profile.display_name,
+      profile.avatar_url,
+      profile.created_at,
+      auth_user.last_sign_in_at,
+      coalesce(moderation.status, 'active') as account_status,
+      exists (select 1 from public.app_admins administrator where administrator.user_id = profile.id) as is_admin,
+      (select count(*) from public.map_entries entry where entry.user_id = profile.id) as story_count,
+      (select count(*) from public.story_routes route where route.created_by = profile.id) as route_count,
+      (select count(*) from public.reports report where report.target_type = 'user' and report.target_id = profile.id) as report_count
+    from public.profiles profile
+    left join auth.users auth_user on auth_user.id = profile.id
+    left join public.account_moderation moderation on moderation.user_id = profile.id
+    where profile.deleted_at is null
+      and (
+        nullif(btrim(coalesce(p_query, '')), '') is null
+        or profile.display_name ilike '%' || btrim(p_query) || '%'
+        or profile.username ilike '%' || btrim(p_query) || '%'
+      )
+    order by profile.created_at desc, profile.id desc
+    offset greatest(coalesce(p_offset, 0), 0)
+    limit least(greatest(coalesce(p_limit, 25), 1), 50) + 1
+  ), numbered as (
+    select *, row_number() over () as row_number from matched
+  )
+  select jsonb_build_object(
+    'items', coalesce(jsonb_agg(to_jsonb(numbered) - 'row_number') filter (
+      where numbered.row_number <= least(greatest(coalesce(p_limit, 25), 1), 50)
+    ), '[]'::jsonb),
+    'has_more', coalesce(max(numbered.row_number), 0) > least(greatest(coalesce(p_limit, 25), 1), 50)
+  ) into result
+  from numbered;
+  return coalesce(result, jsonb_build_object('items', '[]'::jsonb, 'has_more', false));
+end;
+$$;
+
+create or replace function public.admin_list_reports(
+  p_status text default null,
+  p_offset integer default 0,
+  p_limit integer default 25
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  perform private.assert_app_admin();
+  if p_status is not null and p_status not in ('pending', 'reviewing', 'resolved', 'dismissed') then
+    raise exception using errcode = '22023', message = 'invalid report status';
+  end if;
+  with matched as (
+    select
+      report.id,
+      report.target_type,
+      report.target_id,
+      report.reason,
+      report.description,
+      report.status,
+      report.created_at,
+      report.reviewed_at,
+      report.review_notes,
+      reporter.display_name as reporter_name,
+      case report.target_type
+        when 'entry' then coalesce((
+          select case when entry.visibility = 'public' then entry.title else '受保护故事' end
+          from public.map_entries entry where entry.id = report.target_id
+        ), '已删除的故事')
+        when 'route' then coalesce((
+          select case when route.visibility = 'public' then route.title else '受保护路线' end
+          from public.story_routes route where route.id = report.target_id
+        ), '已删除的路线')
+        when 'user' then coalesce((select profile.display_name from public.profiles profile where profile.id = report.target_id), '已删除的用户')
+        when 'group' then coalesce((select case when target_group.visibility = 'public' then target_group.name else '私密群组' end from public.groups target_group where target_group.id = report.target_id), '已归档的群组')
+        when 'comment' then '评论（正文不在审核列表展示）'
+        else '未知对象'
+      end as target_label,
+      case report.target_type
+        when 'entry' then '/entries/' || report.target_id::text
+        when 'route' then coalesce((select '/routes/' || route.share_slug from public.story_routes route where route.id = report.target_id and route.visibility = 'public'), '')
+        when 'user' then '/users/' || report.target_id::text
+        else ''
+      end as target_href
+    from public.reports report
+    left join public.profiles reporter on reporter.id = report.reporter_id
+    where p_status is null or report.status = p_status
+    order by report.created_at desc, report.id desc
+    offset greatest(coalesce(p_offset, 0), 0)
+    limit least(greatest(coalesce(p_limit, 25), 1), 50) + 1
+  ), numbered as (
+    select *, row_number() over () as row_number from matched
+  )
+  select jsonb_build_object(
+    'items', coalesce(jsonb_agg(to_jsonb(numbered) - 'row_number') filter (
+      where numbered.row_number <= least(greatest(coalesce(p_limit, 25), 1), 50)
+    ), '[]'::jsonb),
+    'has_more', coalesce(max(numbered.row_number), 0) > least(greatest(coalesce(p_limit, 25), 1), 50)
+  ) into result
+  from numbered;
+  return coalesce(result, jsonb_build_object('items', '[]'::jsonb, 'has_more', false));
+end;
+$$;
+
+create or replace function public.admin_list_public_content(
+  p_kind text default null,
+  p_offset integer default 0,
+  p_limit integer default 25
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  perform private.assert_app_admin();
+  if p_kind is not null and p_kind not in ('entry', 'route') then
+    raise exception using errcode = '22023', message = 'invalid content kind';
+  end if;
+  with all_content as (
+    select
+      'entry'::text as kind,
+      entry.id,
+      entry.title,
+      author.display_name as author_name,
+      entry.moderation_status,
+      entry.featured_at is not null as featured,
+      entry.created_at,
+      '/entries/' || entry.id::text as href
+    from public.map_entries entry
+    left join public.profiles author on author.id = entry.user_id
+    where entry.visibility = 'public'
+      and (entry.unlock_at is null or entry.unlock_at <= now())
+    union all
+    select
+      'route'::text,
+      route.id,
+      route.title,
+      author.display_name,
+      route.moderation_status,
+      route.featured_at is not null,
+      route.created_at,
+      '/routes/' || route.share_slug
+    from public.story_routes route
+    left join public.profiles author on author.id = route.created_by
+    where route.visibility = 'public' and route.published_at is not null
+  ), matched as (
+    select * from all_content
+    where p_kind is null or kind = p_kind
+    order by created_at desc, id desc
+    offset greatest(coalesce(p_offset, 0), 0)
+    limit least(greatest(coalesce(p_limit, 25), 1), 50) + 1
+  ), numbered as (
+    select *, row_number() over () as row_number from matched
+  )
+  select jsonb_build_object(
+    'items', coalesce(jsonb_agg(to_jsonb(numbered) - 'row_number') filter (
+      where numbered.row_number <= least(greatest(coalesce(p_limit, 25), 1), 50)
+    ), '[]'::jsonb),
+    'has_more', coalesce(max(numbered.row_number), 0) > least(greatest(coalesce(p_limit, 25), 1), 50)
+  ) into result
+  from numbered;
+  return coalesce(result, jsonb_build_object('items', '[]'::jsonb, 'has_more', false));
+end;
+$$;
+
+create or replace function public.admin_list_audit_logs(p_limit integer default 50)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare result jsonb;
+begin
+  perform private.assert_app_admin();
+  select coalesce(jsonb_agg(to_jsonb(log_row)), '[]'::jsonb)
+  into result
+  from (
+    select log.id, log.action, log.target_type, log.target_id,
+      log.report_id, log.metadata, log.created_at,
+      administrator.display_name as admin_name
+    from public.moderation_audit_logs log
+    left join public.profiles administrator on administrator.id = log.admin_user_id
+    order by log.created_at desc, log.id desc
+    limit least(greatest(coalesce(p_limit, 50), 1), 100)
+  ) log_row;
+  return result;
+end;
+$$;
+
+create or replace function public.admin_set_account_restriction(
+  p_user_id uuid,
+  p_restricted boolean,
+  p_reason text default ''
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare actor uuid := private.assert_app_admin();
+begin
+  if p_user_id is null or not exists (select 1 from public.profiles where id = p_user_id and deleted_at is null) then
+    raise exception using errcode = 'P0002', message = 'account not found';
+  end if;
+  if p_user_id = actor or exists (select 1 from public.app_admins where user_id = p_user_id) then
+    raise exception using errcode = '42501', message = 'administrator accounts cannot be restricted here';
+  end if;
+  if char_length(btrim(coalesce(p_reason, ''))) > 500 then
+    raise exception using errcode = '22023', message = 'moderation reason is too long';
+  end if;
+  insert into public.account_moderation (
+    user_id, status, reason, restricted_at, restricted_by, updated_at
+  ) values (
+    p_user_id,
+    case when p_restricted then 'restricted' else 'active' end,
+    case when p_restricted then btrim(coalesce(p_reason, '')) else '' end,
+    case when p_restricted then now() else null end,
+    case when p_restricted then actor else null end,
+    now()
+  ) on conflict (user_id) do update set
+    status = excluded.status,
+    reason = excluded.reason,
+    restricted_at = excluded.restricted_at,
+    restricted_by = excluded.restricted_by,
+    updated_at = now();
+  insert into public.moderation_audit_logs (admin_user_id, action, target_type, target_id, metadata)
+  values (
+    actor,
+    case when p_restricted then 'account.restricted' else 'account.restored' end,
+    'user', p_user_id,
+    jsonb_build_object('reason', left(btrim(coalesce(p_reason, '')), 500))
+  );
+  perform private.enqueue_user_notification(
+    p_user_id, 'security_alert', 'security', null, 'profile', p_user_id,
+    jsonb_build_object(
+      'message', case when p_restricted then '你的账号已被限制，请联系维护者了解详情。' else '你的账号限制已解除。' end,
+      'target_path', '/settings'
+    ),
+    'account-moderation:' || p_user_id::text || ':' || case when p_restricted then 'restricted' else 'restored' end || ':' || extract(epoch from now())::bigint::text
+  );
+end;
+$$;
+
+create or replace function public.admin_moderate_entry(
+  p_entry_id uuid,
+  p_status text,
+  p_reason text default ''
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := private.assert_app_admin();
+  owner_id uuid;
+  entry_title text;
+begin
+  if p_status not in ('active', 'restricted', 'removed') or char_length(btrim(coalesce(p_reason, ''))) > 500 then
+    raise exception using errcode = '22023', message = 'invalid moderation state';
+  end if;
+  select entry.user_id, entry.title into owner_id, entry_title
+  from public.map_entries entry
+  where entry.id = p_entry_id and entry.visibility = 'public'
+  for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'public entry not found';
+  end if;
+  update public.map_entries set
+    moderation_status = p_status,
+    moderation_reason = case when p_status = 'active' then '' else btrim(coalesce(p_reason, '')) end,
+    moderated_at = case when p_status = 'active' then null else now() end,
+    moderated_by = case when p_status = 'active' then null else actor end,
+    featured_at = case when p_status = 'active' then featured_at else null end
+  where id = p_entry_id;
+  insert into public.moderation_audit_logs (admin_user_id, action, target_type, target_id, metadata)
+  values (actor, 'entry.' || p_status, 'entry', p_entry_id,
+    jsonb_build_object('reason', left(btrim(coalesce(p_reason, '')), 500)));
+  perform private.enqueue_user_notification(
+    owner_id, case when p_status = 'active' then 'security_alert' else 'story_restricted' end,
+    'security', null, 'entry', p_entry_id,
+    jsonb_build_object(
+      'entry_title', entry_title,
+      'message', case when p_status = 'active' then '你的故事已恢复展示。' else '你的公开故事已被限制展示。' end,
+      'target_path', '/entries/' || p_entry_id::text
+    ),
+    'entry-moderation:' || p_entry_id::text || ':' || p_status || ':' || extract(epoch from now())::bigint::text
+  );
+end;
+$$;
+
+create or replace function public.admin_moderate_story_route(
+  p_route_id uuid,
+  p_status text,
+  p_reason text default ''
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := private.assert_app_admin();
+  owner_id uuid;
+  route_title text;
+  route_slug text;
+begin
+  if p_status not in ('active', 'restricted', 'removed') or char_length(btrim(coalesce(p_reason, ''))) > 500 then
+    raise exception using errcode = '22023', message = 'invalid moderation state';
+  end if;
+  select route.created_by, route.title, route.share_slug into owner_id, route_title, route_slug
+  from public.story_routes route
+  where route.id = p_route_id and route.visibility = 'public' and route.published_at is not null
+  for update;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'public route not found';
+  end if;
+  update public.story_routes set
+    moderation_status = p_status,
+    moderation_reason = case when p_status = 'active' then '' else btrim(coalesce(p_reason, '')) end,
+    moderated_at = case when p_status = 'active' then null else now() end,
+    moderated_by = case when p_status = 'active' then null else actor end,
+    featured_at = case when p_status = 'active' then featured_at else null end,
+    featured_by = case when p_status = 'active' then featured_by else null end
+  where id = p_route_id;
+  insert into public.moderation_audit_logs (admin_user_id, action, target_type, target_id, metadata)
+  values (actor, 'route.' || p_status, 'route', p_route_id,
+    jsonb_build_object('reason', left(btrim(coalesce(p_reason, '')), 500)));
+  perform private.enqueue_user_notification(
+    owner_id, case when p_status = 'active' then 'security_alert' else 'story_restricted' end,
+    'security', null, 'story_route', p_route_id,
+    jsonb_build_object(
+      'route_title', route_title,
+      'message', case when p_status = 'active' then '你的故事路线已恢复展示。' else '你的公开故事路线已被限制展示。' end,
+      'target_path', '/routes/' || route_slug
+    ),
+    'route-moderation:' || p_route_id::text || ':' || p_status || ':' || extract(epoch from now())::bigint::text
+  );
+end;
+$$;
+
+create or replace function public.admin_set_entry_featured(p_entry_id uuid, p_featured boolean)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := private.assert_app_admin();
+  owner_id uuid;
+  entry_title text;
+begin
+  select entry.user_id, entry.title into owner_id, entry_title
+  from public.map_entries entry
+  where entry.id = p_entry_id
+    and entry.visibility = 'public'
+    and entry.moderation_status = 'active'
+    and not public.is_account_restricted(entry.user_id)
+    and (entry.unlock_at is null or entry.unlock_at <= now());
+  if not found then
+    raise exception using errcode = 'P0002', message = 'eligible public entry not found';
+  end if;
+  update public.map_entries set featured_at = case when p_featured then now() else null end
+  where id = p_entry_id;
+  insert into public.moderation_audit_logs (admin_user_id, action, target_type, target_id, metadata)
+  values (actor, case when p_featured then 'entry.featured' else 'entry.unfeatured' end,
+    'entry', p_entry_id, '{}'::jsonb);
+  if p_featured then
+    perform private.enqueue_user_notification(
+      owner_id, 'story_featured', 'product_updates', null, 'entry', p_entry_id,
+      jsonb_build_object('entry_title', entry_title, 'target_path', '/entries/' || p_entry_id::text),
+      'entry-featured:' || p_entry_id::text || ':' || extract(epoch from now())::bigint::text
+    );
+  end if;
+end;
+$$;
+
+create or replace function public.admin_review_report(
+  p_report_id uuid,
+  p_status text,
+  p_notes text default ''
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := private.assert_app_admin();
+  report_target_type text;
+  report_target_id uuid;
+begin
+  if p_status not in ('reviewing', 'resolved', 'dismissed')
+    or char_length(btrim(coalesce(p_notes, ''))) > 2000
+  then
+    raise exception using errcode = '22023', message = 'invalid report review';
+  end if;
+  update public.reports set
+    status = p_status,
+    reviewed_at = case when p_status in ('resolved', 'dismissed') then now() else reviewed_at end,
+    reviewed_by = actor,
+    review_notes = btrim(coalesce(p_notes, ''))
+  where id = p_report_id
+  returning target_type, target_id into report_target_type, report_target_id;
+  if not found then
+    raise exception using errcode = 'P0002', message = 'report not found';
+  end if;
+  insert into public.moderation_audit_logs (
+    admin_user_id, action, target_type, target_id, report_id, metadata
+  ) values (
+    actor, 'report.' || p_status, 'report', p_report_id, p_report_id,
+    jsonb_build_object(
+      'reported_target_type', report_target_type,
+      'reported_target_id', report_target_id,
+      'notes', left(btrim(coalesce(p_notes, '')), 2000)
+    )
+  );
+end;
+$$;
+
+revoke all on function public.admin_get_dashboard() from public, anon;
+revoke all on function public.admin_list_users(text, integer, integer) from public, anon;
+revoke all on function public.admin_list_reports(text, integer, integer) from public, anon;
+revoke all on function public.admin_list_public_content(text, integer, integer) from public, anon;
+revoke all on function public.admin_list_audit_logs(integer) from public, anon;
+revoke all on function public.admin_set_account_restriction(uuid, boolean, text) from public, anon;
+revoke all on function public.admin_moderate_entry(uuid, text, text) from public, anon;
+revoke all on function public.admin_moderate_story_route(uuid, text, text) from public, anon;
+revoke all on function public.admin_set_entry_featured(uuid, boolean) from public, anon;
+revoke all on function public.admin_review_report(uuid, text, text) from public, anon;
+
+grant execute on function public.admin_get_dashboard() to authenticated;
+grant execute on function public.admin_list_users(text, integer, integer) to authenticated;
+grant execute on function public.admin_list_reports(text, integer, integer) to authenticated;
+grant execute on function public.admin_list_public_content(text, integer, integer) to authenticated;
+grant execute on function public.admin_list_audit_logs(integer) to authenticated;
+grant execute on function public.admin_set_account_restriction(uuid, boolean, text) to authenticated;
+grant execute on function public.admin_moderate_entry(uuid, text, text) to authenticated;
+grant execute on function public.admin_moderate_story_route(uuid, text, text) to authenticated;
+grant execute on function public.admin_set_entry_featured(uuid, boolean) to authenticated;
+grant execute on function public.admin_review_report(uuid, text, text) to authenticated;
+
+comment on table public.app_admins is
+  'Explicit application administrators. Bootstrap entries only from trusted SQL or service operations.';
+comment on table public.account_moderation is
+  'Private account restriction state; never place moderation fields on public profiles.';
+comment on table public.moderation_audit_logs is
+  'Append-only audit metadata. It intentionally excludes private story bodies and authentication secrets.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608290002_v14_product_analytics.sql
+-- ============================================================
+-- Story-and-Place v1.4: privacy-bounded product analytics.
+-- Product events contain an allowlisted event name and low-sensitivity scalar
+-- dimensions only. Story text, titles, search terms, coordinates, email and
+-- authentication material are deliberately outside this schema.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.story_routes') is null
+    or to_regclass('public.user_experience_preferences') is null
+    or to_regprocedure('private.assert_app_admin()') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'product analytics requires all v1.4 governance prerequisites';
+  end if;
+end;
+$$;
+
+create table if not exists public.product_events (
+  id uuid primary key,
+  event_name text not null,
+  user_id uuid references public.profiles(id) on delete cascade,
+  anonymous_session_id uuid not null,
+  properties jsonb not null default '{}'::jsonb,
+  occurred_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  constraint product_events_event_name_values check (event_name in (
+    'session_started',
+    'signup_started',
+    'signup_completed',
+    'onboarding_started',
+    'onboarding_completed',
+    'onboarding_skipped',
+    'story_create_started',
+    'story_created',
+    'story_published',
+    'draft_created',
+    'draft_resumed',
+    'route_created',
+    'search_used',
+    'search_result_opened',
+    'explore_opened',
+    'public_story_opened',
+    'public_profile_opened',
+    'story_shared',
+    'invitation_sent',
+    'invitation_accepted',
+    'export_started',
+    'export_completed'
+  )),
+  constraint product_events_properties_object check (
+    jsonb_typeof(properties) = 'object'
+  ),
+  constraint product_events_properties_size check (
+    pg_column_size(properties) <= 2048
+  ),
+  constraint product_events_server_time check (occurred_at = created_at)
+);
+
+create index if not exists product_events_name_time_idx
+  on public.product_events(event_name, occurred_at desc, id desc);
+create index if not exists product_events_user_time_idx
+  on public.product_events(user_id, occurred_at desc, id desc)
+  where user_id is not null;
+create index if not exists product_events_session_time_idx
+  on public.product_events(anonymous_session_id, occurred_at desc, id desc);
+create index if not exists product_events_session_name_time_idx
+  on public.product_events(anonymous_session_id, event_name, occurred_at desc);
+create index if not exists product_events_authenticated_session_started_idx
+  on public.product_events(user_id, occurred_at desc)
+  where event_name = 'session_started' and user_id is not null;
+create index if not exists profiles_product_analytics_created_idx
+  on public.profiles(created_at desc, id);
+create index if not exists map_entries_product_analytics_owner_created_idx
+  on public.map_entries(user_id, created_at desc);
+create index if not exists story_routes_product_analytics_created_idx
+  on public.story_routes(created_at desc, created_by);
+
+alter table public.product_events enable row level security;
+
+-- Deliberate deny policy: browser roles never receive raw event-table access.
+-- Tracking and aggregate reads only happen through the two bounded RPCs below.
+drop policy if exists "product_events_no_direct_browser_reads"
+  on public.product_events;
+create policy "product_events_no_direct_browser_reads"
+on public.product_events for select to anon, authenticated
+using (false);
+
+revoke all on table public.product_events from public, anon, authenticated;
+
+create or replace function public.track_product_event(
+  p_event_id uuid,
+  p_anonymous_session_id uuid,
+  p_event_name text,
+  p_properties jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  safe_properties jsonb := coalesce(p_properties, '{}'::jsonb);
+begin
+  if p_event_id is null or p_anonymous_session_id is null then
+    raise exception using errcode = '22023', message = 'invalid analytics identity';
+  end if;
+
+  if p_event_name is null or p_event_name not in (
+    'session_started',
+    'signup_started',
+    'signup_completed',
+    'onboarding_started',
+    'onboarding_completed',
+    'onboarding_skipped',
+    'story_create_started',
+    'story_created',
+    'story_published',
+    'draft_created',
+    'draft_resumed',
+    'route_created',
+    'search_used',
+    'search_result_opened',
+    'explore_opened',
+    'public_story_opened',
+    'public_profile_opened',
+    'story_shared',
+    'invitation_sent',
+    'invitation_accepted',
+    'export_started',
+    'export_completed'
+  ) then
+    raise exception using errcode = '22023', message = 'invalid analytics event';
+  end if;
+
+  if jsonb_typeof(safe_properties) <> 'object' then
+    raise exception using errcode = '22023', message = 'unsafe analytics properties';
+  end if;
+
+  if (select count(*) from jsonb_object_keys(safe_properties)) > 10
+    or pg_column_size(safe_properties) > 2048
+    or exists (
+      select 1
+      from jsonb_object_keys(safe_properties) as property_key
+      where property_key not in (
+        'source', 'format', 'result_type', 'content_type',
+        'invitation_type', 'visibility', 'outcome',
+        'result_count_bucket', 'story_ordinal'
+      )
+    )
+    or exists (
+      select 1
+      from jsonb_each(safe_properties) as property
+      where jsonb_typeof(property.value) not in ('string', 'number', 'boolean', 'null')
+        or (
+          jsonb_typeof(property.value) = 'string'
+          and char_length(property.value #>> '{}') > 80
+        )
+    )
+    or (
+      safe_properties ? 'source'
+      and safe_properties ->> 'source' not in (
+        'auth-provider', 'register-form', 'welcome', 'first-story',
+        'entry-autosave', 'map-draft-url', 'map', 'onboarding',
+        'route-builder', 'route-detail', 'global-search', 'search-map',
+        'search-list', 'explore-page', 'entry-share', 'public-profile',
+        'settings', 'entry-participants', 'entry-invitations',
+        'group-members', 'group-invitations'
+      )
+    )
+    or (
+      safe_properties ? 'format'
+      and safe_properties ->> 'format' not in ('json', 'csv', 'geojson')
+    )
+    or (
+      safe_properties ? 'result_type'
+      and safe_properties ->> 'result_type' not in ('entry', 'profile', 'route', 'tag', 'emotion')
+    )
+    or (
+      safe_properties ? 'content_type'
+      and safe_properties ->> 'content_type' not in ('entry', 'route', 'draft')
+    )
+    or (
+      safe_properties ? 'invitation_type'
+      and safe_properties ->> 'invitation_type' not in ('entry', 'group')
+    )
+    or (
+      safe_properties ? 'visibility'
+      and safe_properties ->> 'visibility' not in ('public', 'private', 'group')
+    )
+    or (
+      safe_properties ? 'outcome'
+      and safe_properties ->> 'outcome' not in ('success', 'failed', 'completed', 'skipped')
+    )
+    or (
+      safe_properties ? 'result_count_bucket'
+      and safe_properties ->> 'result_count_bucket' not in (
+        'zero', 'one_to_five', 'six_to_twenty', 'over_twenty'
+      )
+    )
+    or (
+      safe_properties ? 'story_ordinal'
+      and not case
+        when jsonb_typeof(safe_properties -> 'story_ordinal') = 'number'
+          and (safe_properties ->> 'story_ordinal') ~ '^[0-9]{1,4}$'
+        then (safe_properties ->> 'story_ordinal')::integer between 1 and 1000
+        else false
+      end
+    )
+  then
+    raise exception using errcode = '22023', message = 'unsafe analytics properties';
+  end if;
+
+  -- Serialize the per-session rate check so concurrent direct RPC requests
+  -- cannot bypass it. This is defense in depth, not the platform edge limit.
+  perform pg_advisory_xact_lock(hashtextextended(p_anonymous_session_id::text, 0));
+  if (
+    select count(*)
+    from public.product_events event
+    where event.anonymous_session_id = p_anonymous_session_id
+      and event.occurred_at >= now() - interval '10 minutes'
+  ) >= 120 then
+    raise exception using errcode = 'P0001', message = 'analytics rate limit exceeded';
+  end if;
+
+  insert into public.product_events (
+    id, event_name, user_id, anonymous_session_id,
+    properties, occurred_at, created_at
+  ) values (
+    p_event_id, p_event_name, actor, p_anonymous_session_id,
+    safe_properties, now(), now()
+  )
+  on conflict (id) do nothing;
+end;
+$$;
+
+create or replace function public.admin_get_product_analytics(
+  p_start_at timestamptz default now() - interval '30 days',
+  p_end_at timestamptz default now()
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  range_start timestamptz := coalesce(p_start_at, now() - interval '30 days');
+  range_end timestamptz := coalesce(p_end_at, now());
+  signup_count integer;
+  tracked_active integer;
+  onboarding_count integer;
+  first_story_count integer;
+  second_story_count integer;
+  returned_within_seven integer;
+  story_count integer;
+  story_creator_count integer;
+  route_creator_count integer;
+  search_visitors integer;
+  explore_visitors integer;
+  explore_story_visitors integer;
+  explore_profile_visitors integer;
+  explore_signup_visitors integer;
+  retention_day integer;
+  eligible_count integer;
+  retained_count integer;
+  retention jsonb := '{}'::jsonb;
+  daily jsonb;
+begin
+  perform private.assert_app_admin();
+
+  if range_start >= range_end
+    or range_end - range_start > interval '366 days'
+    or range_end > now() + interval '5 minutes'
+  then
+    raise exception using errcode = '22023', message = 'invalid analytics range';
+  end if;
+
+  select count(*)::integer into signup_count
+  from public.profiles profile
+  where profile.created_at >= range_start and profile.created_at < range_end;
+
+  select count(distinct event.user_id)::integer into tracked_active
+  from public.product_events event
+  where event.user_id is not null
+    and event.occurred_at >= range_start and event.occurred_at < range_end;
+
+  select count(*)::integer into onboarding_count
+  from public.profiles profile
+  join public.user_experience_preferences preference on preference.user_id = profile.id
+  where profile.created_at >= range_start and profile.created_at < range_end
+    and preference.onboarding_status = 'completed'
+    and preference.finished_at < range_end;
+
+  select count(*)::integer into first_story_count
+  from public.profiles profile
+  where profile.created_at >= range_start and profile.created_at < range_end
+    and exists (
+      select 1 from public.map_entries entry
+      where entry.user_id = profile.id and entry.created_at < range_end
+    );
+
+  select count(*)::integer into second_story_count
+  from public.profiles profile
+  where profile.created_at >= range_start and profile.created_at < range_end
+    and (
+      select count(*) from public.map_entries entry
+      where entry.user_id = profile.id and entry.created_at < range_end
+    ) >= 2;
+
+  select count(*)::integer into returned_within_seven
+  from public.profiles profile
+  where profile.created_at >= range_start and profile.created_at < range_end
+    and exists (
+      select 1 from public.product_events event
+      where event.user_id = profile.id
+        and event.event_name = 'session_started'
+        and event.occurred_at >= profile.created_at + interval '1 day'
+        and event.occurred_at < profile.created_at + interval '8 days'
+    );
+
+  select count(*)::integer, count(distinct entry.user_id)::integer
+  into story_count, story_creator_count
+  from public.map_entries entry
+  where entry.created_at >= range_start and entry.created_at < range_end;
+
+  select count(distinct route.created_by)::integer into route_creator_count
+  from public.story_routes route
+  where route.created_at >= range_start and route.created_at < range_end;
+
+  select count(distinct coalesce(event.user_id::text, event.anonymous_session_id::text))::integer
+  into search_visitors
+  from public.product_events event
+  where event.event_name = 'search_used'
+    and event.occurred_at >= range_start and event.occurred_at < range_end;
+
+  select count(distinct event.anonymous_session_id)::integer
+  into explore_visitors
+  from public.product_events event
+  where event.event_name = 'explore_opened'
+    and event.occurred_at >= range_start and event.occurred_at < range_end;
+
+  select count(distinct viewed.anonymous_session_id)::integer
+  into explore_story_visitors
+  from public.product_events viewed
+  where viewed.event_name = 'public_story_opened'
+    and viewed.occurred_at >= range_start and viewed.occurred_at < range_end
+    and exists (
+      select 1 from public.product_events opened
+      where opened.anonymous_session_id = viewed.anonymous_session_id
+        and opened.event_name = 'explore_opened'
+        and opened.occurred_at >= range_start
+        and opened.occurred_at <= viewed.occurred_at
+    );
+
+  select count(distinct viewed.anonymous_session_id)::integer
+  into explore_profile_visitors
+  from public.product_events viewed
+  where viewed.event_name = 'public_profile_opened'
+    and viewed.occurred_at >= range_start and viewed.occurred_at < range_end
+    and exists (
+      select 1 from public.product_events opened
+      where opened.anonymous_session_id = viewed.anonymous_session_id
+        and opened.event_name = 'explore_opened'
+        and opened.occurred_at >= range_start
+        and opened.occurred_at <= viewed.occurred_at
+    );
+
+  select count(distinct signup.anonymous_session_id)::integer
+  into explore_signup_visitors
+  from public.product_events signup
+  where signup.event_name = 'signup_completed'
+    and signup.occurred_at >= range_start and signup.occurred_at < range_end
+    and exists (
+      select 1 from public.product_events opened
+      where opened.anonymous_session_id = signup.anonymous_session_id
+        and opened.event_name = 'explore_opened'
+        and opened.occurred_at <= signup.occurred_at
+        and opened.occurred_at >= range_start
+    );
+
+  foreach retention_day in array array[1, 7, 30]
+  loop
+    select count(*)::integer into eligible_count
+    from public.profiles profile
+    where profile.created_at >= range_start
+      and profile.created_at < least(range_end, now() - make_interval(days => retention_day));
+
+    select count(*)::integer into retained_count
+    from public.profiles profile
+    where profile.created_at >= range_start
+      and profile.created_at < least(range_end, now() - make_interval(days => retention_day))
+      and exists (
+        select 1 from public.product_events event
+        where event.user_id = profile.id
+          and event.event_name = 'session_started'
+          and event.occurred_at >= profile.created_at + make_interval(days => retention_day)
+          and event.occurred_at < profile.created_at + make_interval(days => retention_day + 1)
+      );
+
+    retention := retention || jsonb_build_object(
+      'd' || retention_day::text,
+      jsonb_build_object(
+        'eligible', eligible_count,
+        'retained', retained_count,
+        'rate', case when eligible_count = 0 then 0
+          else round(retained_count::numeric * 100 / eligible_count, 2) end
+      )
+    );
+  end loop;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'day', day_bucket::date,
+    'signups', (
+      select count(*) from public.profiles profile
+      where profile.created_at >= day_bucket
+        and profile.created_at < day_bucket + interval '1 day'
+    ),
+    'active_users', (
+      select count(distinct event.user_id) from public.product_events event
+      where event.user_id is not null
+        and event.occurred_at >= day_bucket
+        and event.occurred_at < day_bucket + interval '1 day'
+    ),
+    'stories', (
+      select count(*) from public.map_entries entry
+      where entry.created_at >= day_bucket
+        and entry.created_at < day_bucket + interval '1 day'
+    )
+  ) order by day_bucket), '[]'::jsonb)
+  into daily
+  from generate_series(
+    date_trunc('day', range_start),
+    date_trunc('day', range_end - interval '1 microsecond'),
+    interval '1 day'
+  ) as day_bucket;
+
+  return jsonb_build_object(
+    'range', jsonb_build_object('start_at', range_start, 'end_at', range_end),
+    'acquisition', jsonb_build_object(
+      'signups', signup_count,
+      'tracked_active_users', tracked_active
+    ),
+    'activation', jsonb_build_object(
+      'cohort_users', signup_count,
+      'onboarding_completed', onboarding_count,
+      'onboarding_rate', case when signup_count = 0 then 0 else round(onboarding_count::numeric * 100 / signup_count, 2) end,
+      'first_story_created', first_story_count,
+      'first_story_rate', case when signup_count = 0 then 0 else round(first_story_count::numeric * 100 / signup_count, 2) end,
+      'second_story_created', second_story_count,
+      'second_story_rate', case when signup_count = 0 then 0 else round(second_story_count::numeric * 100 / signup_count, 2) end
+    ),
+    'engagement', jsonb_build_object(
+      'stories_created', story_count,
+      'story_creators', story_creator_count,
+      'stories_per_creator', case when story_creator_count = 0 then 0 else round(story_count::numeric / story_creator_count, 2) end,
+      'route_creators', route_creator_count,
+      'route_adoption_rate', case when tracked_active = 0 then 0 else round(route_creator_count::numeric * 100 / tracked_active, 2) end,
+      'search_visitors', search_visitors,
+      'explore_visitors', explore_visitors
+    ),
+    'activation_funnel', jsonb_build_object(
+      'signup_completed', signup_count,
+      'onboarding_completed', onboarding_count,
+      'first_story_created', first_story_count,
+      'second_story_created', second_story_count,
+      'returned_within_7d', returned_within_seven
+    ),
+    'explore_funnel', jsonb_build_object(
+      'explore_opened', explore_visitors,
+      'public_story_opened', explore_story_visitors,
+      'public_profile_opened', explore_profile_visitors,
+      'signup_completed', explore_signup_visitors
+    ),
+    'retention', retention,
+    'daily', daily
+  );
+end;
+$$;
+
+revoke all on function public.track_product_event(uuid, uuid, text, jsonb)
+  from public, anon, authenticated;
+revoke all on function public.admin_get_product_analytics(timestamptz, timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.track_product_event(uuid, uuid, text, jsonb)
+  to anon, authenticated;
+grant execute on function public.admin_get_product_analytics(timestamptz, timestamptz)
+  to authenticated;
+
+comment on table public.product_events is
+  'Privacy-bounded product events. Raw content, queries, coordinates, emails and auth material are forbidden.';
+comment on function public.track_product_event(uuid, uuid, text, jsonb) is
+  'Records one idempotent allowlisted event. The authenticated user is always derived from auth.uid().';
+comment on function public.admin_get_product_analytics(timestamptz, timestamptz) is
+  'Returns aggregate product funnels and retention to an authenticated app admin.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608290003_v14_commercial_foundation.sql
+-- ============================================================
+-- v1.4 commercial foundation: public plan catalog, entitlement-driven limits,
+-- private subscription state, exact usage reporting and database-enforced quotas.
+--
+-- This migration does not connect a payment provider and does not charge users.
+-- Rollback note: remove the quota trigger/functions before dropping these tables.
+-- Do not roll back after subscriptions exist without first preserving that state.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regclass('public.map_entries') is null
+    or to_regclass('public.story_routes') is null
+    or to_regclass('public.entry_media_assets') is null
+    or to_regprocedure('public.set_updated_at()') is null
+    or to_regprocedure('public.is_account_restricted(uuid)') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'commercial foundation requires the v1.4 media and governance migrations';
+  end if;
+end;
+$$;
+
+create table if not exists public.plans (
+  code text primary key,
+  name varchar(80) not null,
+  description varchar(500) not null default '',
+  is_active boolean not null default true,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint plans_code_format check (code ~ '^[a-z][a-z0-9_]{1,31}$'),
+  constraint plans_name_not_blank check (char_length(btrim(name)) between 1 and 80),
+  constraint plans_description_length check (char_length(description) <= 500),
+  constraint plans_sort_order_range check (sort_order between 0 and 10000)
+);
+
+create table if not exists public.plan_entitlements (
+  plan_code text not null references public.plans(code) on delete cascade,
+  entitlement_key text not null,
+  value_type text not null,
+  boolean_value boolean,
+  integer_value bigint,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (plan_code, entitlement_key),
+  constraint plan_entitlements_known_key check (
+    entitlement_key in (
+      'can_upload_media',
+      'max_storage_bytes',
+      'max_media_files',
+      'max_story_routes',
+      'advanced_export'
+    )
+  ),
+  constraint plan_entitlements_value_type check (
+    value_type in ('boolean', 'integer')
+  ),
+  constraint plan_entitlements_typed_value check (
+    (value_type = 'boolean' and boolean_value is not null and integer_value is null)
+    or
+    (value_type = 'integer' and boolean_value is null and integer_value is not null and integer_value >= 0)
+  )
+);
+
+create table if not exists public.user_subscriptions (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  plan_code text not null references public.plans(code) on delete restrict,
+  status text not null default 'active',
+  current_period_start timestamptz,
+  current_period_end timestamptz,
+  canceled_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint user_subscriptions_status_values check (
+    status in ('trialing', 'active', 'past_due', 'canceled')
+  ),
+  constraint user_subscriptions_period_order check (
+    current_period_start is null
+    or current_period_end is null
+    or current_period_end > current_period_start
+  ),
+  constraint user_subscriptions_cancel_state check (
+    status = 'canceled' or canceled_at is null
+  )
+);
+
+create index if not exists user_subscriptions_plan_status_idx
+  on public.user_subscriptions(plan_code, status, current_period_end);
+
+drop trigger if exists plans_set_updated_at on public.plans;
+create trigger plans_set_updated_at
+before update on public.plans
+for each row execute function public.set_updated_at();
+
+drop trigger if exists plan_entitlements_set_updated_at on public.plan_entitlements;
+create trigger plan_entitlements_set_updated_at
+before update on public.plan_entitlements
+for each row execute function public.set_updated_at();
+
+drop trigger if exists user_subscriptions_set_updated_at on public.user_subscriptions;
+create trigger user_subscriptions_set_updated_at
+before update on public.user_subscriptions
+for each row execute function public.set_updated_at();
+
+insert into public.plans (code, name, description, sort_order)
+values
+  ('free', 'Free', '保留完整的故事记录核心能力与基础媒体空间。', 10),
+  ('supporter', 'Supporter', '为长期记录者预留更大的媒体与故事线路容量。', 20),
+  ('creator', 'Creator', '为持续公开创作与大型地图预留更高容量。', 30)
+on conflict (code) do update
+set name = excluded.name,
+    description = excluded.description,
+    sort_order = excluded.sort_order;
+
+insert into public.plan_entitlements (
+  plan_code, entitlement_key, value_type, boolean_value, integer_value
+)
+values
+  ('free', 'can_upload_media', 'boolean', true, null),
+  ('free', 'max_storage_bytes', 'integer', null, 524288000),
+  ('free', 'max_media_files', 'integer', null, 1000),
+  ('free', 'max_story_routes', 'integer', null, 100),
+  ('free', 'advanced_export', 'boolean', true, null),
+  ('supporter', 'can_upload_media', 'boolean', true, null),
+  ('supporter', 'max_storage_bytes', 'integer', null, 5368709120),
+  ('supporter', 'max_media_files', 'integer', null, 10000),
+  ('supporter', 'max_story_routes', 'integer', null, 500),
+  ('supporter', 'advanced_export', 'boolean', true, null),
+  ('creator', 'can_upload_media', 'boolean', true, null),
+  ('creator', 'max_storage_bytes', 'integer', null, 21474836480),
+  ('creator', 'max_media_files', 'integer', null, 50000),
+  ('creator', 'max_story_routes', 'integer', null, 2000),
+  ('creator', 'advanced_export', 'boolean', true, null)
+on conflict (plan_code, entitlement_key) do update
+set value_type = excluded.value_type,
+    boolean_value = excluded.boolean_value,
+    integer_value = excluded.integer_value;
+
+create or replace function private.resolve_user_plan_code(p_user_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (
+      select subscription.plan_code
+      from public.user_subscriptions subscription
+      join public.plans plan on plan.code = subscription.plan_code
+      where subscription.user_id = p_user_id
+        and plan.is_active
+        and (
+          (
+            subscription.status in ('trialing', 'active')
+            and (
+              subscription.current_period_end is null
+              or subscription.current_period_end > now()
+            )
+          )
+          or (
+            subscription.status = 'canceled'
+            and subscription.current_period_end is not null
+            and subscription.current_period_end > now()
+          )
+        )
+      limit 1
+    ),
+    'free'
+  );
+$$;
+
+create or replace function private.get_boolean_entitlement(
+  p_user_id uuid,
+  p_entitlement_key text,
+  p_default boolean default false
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (
+      select entitlement.boolean_value
+      from public.plan_entitlements entitlement
+      where entitlement.plan_code = private.resolve_user_plan_code(p_user_id)
+        and entitlement.entitlement_key = p_entitlement_key
+        and entitlement.value_type = 'boolean'
+    ),
+    p_default
+  );
+$$;
+
+create or replace function private.get_integer_entitlement(
+  p_user_id uuid,
+  p_entitlement_key text,
+  p_default bigint default 0
+)
+returns bigint
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce(
+    (
+      select entitlement.integer_value
+      from public.plan_entitlements entitlement
+      where entitlement.plan_code = private.resolve_user_plan_code(p_user_id)
+        and entitlement.entitlement_key = p_entitlement_key
+        and entitlement.value_type = 'integer'
+    ),
+    p_default
+  );
+$$;
+
+create or replace function public.get_my_commercial_access()
+returns table (
+  plan_code text,
+  plan_name text,
+  plan_description text,
+  subscription_status text,
+  current_period_end timestamptz,
+  can_upload_media boolean,
+  max_storage_bytes bigint,
+  max_media_files bigint,
+  max_story_routes bigint,
+  advanced_export boolean,
+  story_count bigint,
+  active_route_count bigint,
+  storage_bytes bigint,
+  media_file_count bigint
+)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  resolved_plan text;
+begin
+  if actor is null then
+    raise exception using errcode = '42501', message = 'authentication required';
+  end if;
+
+  resolved_plan := private.resolve_user_plan_code(actor);
+
+  return query
+  select
+    plan.code,
+    plan.name::text,
+    plan.description::text,
+    subscription.status,
+    subscription.current_period_end,
+    private.get_boolean_entitlement(actor, 'can_upload_media', false),
+    private.get_integer_entitlement(actor, 'max_storage_bytes', 0),
+    private.get_integer_entitlement(actor, 'max_media_files', 0),
+    private.get_integer_entitlement(actor, 'max_story_routes', 0),
+    private.get_boolean_entitlement(actor, 'advanced_export', false),
+    (select count(*) from public.map_entries entry where entry.user_id = actor),
+    (
+      select count(*)
+      from public.story_routes route
+      where route.created_by = actor and route.archived_at is null
+    ),
+    (
+      select coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint
+      from public.entry_media_assets asset
+      where asset.user_id = actor and asset.status in ('pending', 'ready')
+    ),
+    (
+      select count(*)
+      from public.entry_media_assets asset
+      where asset.user_id = actor and asset.status in ('pending', 'ready')
+    )
+  from public.plans plan
+  left join public.user_subscriptions subscription
+    on subscription.user_id = actor
+    and subscription.plan_code = plan.code
+  where plan.code = resolved_plan;
+end;
+$$;
+
+create or replace function public.get_my_story_media_usage()
+returns table (
+  used_bytes bigint,
+  quota_bytes bigint,
+  file_count integer
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint,
+    private.get_integer_entitlement((select auth.uid()), 'max_storage_bytes', 0),
+    count(*)::integer
+  from public.entry_media_assets asset
+  where asset.user_id = (select auth.uid())
+    and asset.status in ('pending', 'ready');
+$$;
+
+create or replace function public.reserve_entry_media_asset(
+  p_user_id uuid,
+  p_entry_id uuid,
+  p_source_mime_type text,
+  p_size_bytes bigint,
+  p_thumbnail_size_bytes bigint,
+  p_width integer,
+  p_height integer
+)
+returns public.entry_media_assets
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := p_user_id;
+  asset_id uuid := gen_random_uuid();
+  current_bytes bigint;
+  current_files bigint;
+  max_bytes bigint;
+  max_files bigint;
+  reserved public.entry_media_assets%rowtype;
+begin
+  if actor is null or public.is_account_restricted(actor) then
+    raise exception using errcode = '42501', message = 'media owner unavailable';
+  end if;
+  if not private.get_boolean_entitlement(actor, 'can_upload_media', false) then
+    raise exception using errcode = '42501', message = 'media upload entitlement required';
+  end if;
+  if p_source_mime_type not in ('image/jpeg', 'image/png', 'image/webp')
+    or p_size_bytes not between 1 and 6291456
+    or p_thumbnail_size_bytes not between 1 and 2097152
+    or p_width not between 1 and 20000
+    or p_height not between 1 and 20000
+  then
+    raise exception using errcode = '22023', message = 'invalid media metadata';
+  end if;
+  if not exists (
+    select 1 from public.map_entries entry
+    where entry.id = p_entry_id
+      and entry.user_id = actor
+      and entry.moderation_status = 'active'
+      and (
+        entry.visibility <> 'group'
+        or exists (
+          select 1 from public.group_members membership
+          where membership.group_id = entry.group_id
+            and membership.user_id = actor
+            and membership.status = 'active'
+        )
+      )
+  ) then
+    raise exception using errcode = '42501', message = 'entry media owner required';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(actor::text, 8142301)
+  );
+
+  select
+    coalesce(sum(asset.size_bytes + asset.thumbnail_size_bytes), 0)::bigint,
+    count(*)::bigint
+  into current_bytes, current_files
+  from public.entry_media_assets asset
+  where asset.user_id = actor and asset.status in ('pending', 'ready');
+
+  max_bytes := private.get_integer_entitlement(actor, 'max_storage_bytes', 0);
+  max_files := private.get_integer_entitlement(actor, 'max_media_files', 0);
+
+  if (
+    select count(*) from public.entry_media_assets asset
+    where asset.entry_id = p_entry_id and asset.status in ('pending', 'ready')
+  ) >= 10 then
+    raise exception using errcode = '23514', message = 'entry media limit reached';
+  end if;
+  if current_files >= max_files then
+    raise exception using errcode = '23514', message = 'story media file quota reached';
+  end if;
+  if current_bytes + p_size_bytes + p_thumbnail_size_bytes > max_bytes then
+    raise exception using errcode = '23514', message = 'story media storage quota reached';
+  end if;
+
+  insert into public.entry_media_assets (
+    id, entry_id, user_id, storage_path, thumbnail_path, source_mime_type,
+    width, height, size_bytes, thumbnail_size_bytes
+  ) values (
+    asset_id, p_entry_id, actor,
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '.webp',
+    actor::text || '/' || p_entry_id::text || '/' || asset_id::text || '-thumb.webp',
+    p_source_mime_type, p_width, p_height, p_size_bytes, p_thumbnail_size_bytes
+  ) returning * into reserved;
+
+  return reserved;
+end;
+$$;
+
+create or replace function private.enforce_story_route_quota()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  current_routes bigint;
+  max_routes bigint;
+begin
+  if new.archived_at is not null then
+    return new;
+  end if;
+  if tg_op = 'UPDATE'
+    and old.archived_at is null
+    and old.created_by = new.created_by
+  then
+    return new;
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(new.created_by::text, 8142302)
+  );
+
+  max_routes := private.get_integer_entitlement(
+    new.created_by,
+    'max_story_routes',
+    0
+  );
+  select count(*) into current_routes
+  from public.story_routes route
+  where route.created_by = new.created_by
+    and route.archived_at is null
+    and route.id <> new.id;
+
+  if current_routes >= max_routes then
+    raise exception using errcode = '23514', message = 'story route quota reached';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists story_routes_enforce_entitlement_quota on public.story_routes;
+create trigger story_routes_enforce_entitlement_quota
+before insert or update of archived_at, created_by on public.story_routes
+for each row execute function private.enforce_story_route_quota();
+
+alter table public.plans enable row level security;
+alter table public.plan_entitlements enable row level security;
+alter table public.user_subscriptions enable row level security;
+
+drop policy if exists "active_plans_are_public" on public.plans;
+create policy "active_plans_are_public"
+on public.plans for select to anon, authenticated
+using (is_active);
+
+drop policy if exists "active_plan_entitlements_are_public" on public.plan_entitlements;
+create policy "active_plan_entitlements_are_public"
+on public.plan_entitlements for select to anon, authenticated
+using (
+  exists (
+    select 1 from public.plans plan
+    where plan.code = plan_entitlements.plan_code and plan.is_active
+  )
+);
+
+drop policy if exists "users_read_own_subscription" on public.user_subscriptions;
+create policy "users_read_own_subscription"
+on public.user_subscriptions for select to authenticated
+using (user_id = (select auth.uid()));
+
+revoke all on table public.plans from public, anon, authenticated;
+revoke all on table public.plan_entitlements from public, anon, authenticated;
+revoke all on table public.user_subscriptions from public, anon, authenticated;
+grant select on table public.plans to anon, authenticated;
+grant select on table public.plan_entitlements to anon, authenticated;
+grant select on table public.user_subscriptions to authenticated;
+
+revoke all on function private.resolve_user_plan_code(uuid) from public, anon, authenticated;
+revoke all on function private.get_boolean_entitlement(uuid, text, boolean) from public, anon, authenticated;
+revoke all on function private.get_integer_entitlement(uuid, text, bigint) from public, anon, authenticated;
+revoke all on function private.enforce_story_route_quota() from public, anon, authenticated;
+revoke all on function public.get_my_commercial_access() from public, anon, authenticated;
+grant execute on function public.get_my_commercial_access() to authenticated;
+
+revoke all on function public.get_my_story_media_usage() from public, anon, authenticated;
+grant execute on function public.get_my_story_media_usage() to authenticated;
+revoke all on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+from public, anon, authenticated;
+grant execute on function public.reserve_entry_media_asset(uuid, uuid, text, bigint, bigint, integer, integer)
+to service_role;
+
+comment on table public.plans is
+  'Public product plan catalog. Application behavior must use entitlements, not plan-name branches.';
+comment on table public.plan_entitlements is
+  'Typed feature and quota values for each product plan.';
+comment on table public.user_subscriptions is
+  'Server-managed user plan assignment. No payment provider is connected by this migration.';
+comment on function public.get_my_commercial_access() is
+  'Returns the authenticated user current entitlements and exact owned-resource usage.';
+comment on function private.enforce_story_route_quota() is
+  'Serializes new or restored route writes and enforces max_story_routes.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 202608290004_v14_product_completeness.sql
+-- ============================================================
+-- v1.4 product completeness: privacy-bounded feedback intake and simple
+-- operational feature flags. No flag is an authorization boundary.
+--
+-- Rollback note: remove application callers and the evaluated-flags RPC before
+-- dropping these tables. Product feedback should be exported before rollback.
+
+do $$
+begin
+  if to_regclass('public.profiles') is null
+    or to_regprocedure('public.set_updated_at()') is null
+    or to_regprocedure('public.consume_server_rate_limit(text,text,integer,integer)') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'product completeness requires the v1.4 security migration';
+  end if;
+end;
+$$;
+
+create table if not exists public.product_feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.profiles(id) on delete set null,
+  category text not null,
+  message varchar(2000) not null,
+  current_route varchar(240) not null,
+  app_version varchar(80) not null,
+  status text not null default 'new',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint product_feedback_category_values check (
+    category in ('bug', 'feature', 'content', 'other')
+  ),
+  constraint product_feedback_message_not_blank check (
+    char_length(btrim(message)) between 1 and 2000
+  ),
+  constraint product_feedback_route_safe check (
+    char_length(current_route) between 1 and 240
+    and current_route like '/%'
+    and current_route !~ '[[:cntrl:]?#]'
+  ),
+  constraint product_feedback_version_safe check (
+    char_length(btrim(app_version)) between 1 and 80
+    and app_version !~ '[[:cntrl:]]'
+  ),
+  constraint product_feedback_status_values check (
+    status in ('new', 'reviewing', 'resolved', 'dismissed')
+  )
+);
+
+create index if not exists product_feedback_status_created_idx
+  on public.product_feedback(status, created_at desc, id desc);
+create index if not exists product_feedback_user_created_idx
+  on public.product_feedback(user_id, created_at desc, id desc)
+  where user_id is not null;
+
+drop trigger if exists product_feedback_set_updated_at on public.product_feedback;
+create trigger product_feedback_set_updated_at
+before update on public.product_feedback
+for each row execute function public.set_updated_at();
+
+create table if not exists public.feature_flags (
+  key text primary key,
+  description varchar(500) not null default '',
+  enabled boolean not null default false,
+  rollout_percentage smallint not null default 0,
+  authenticated_only boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint feature_flags_key_format check (
+    char_length(key) between 2 and 64
+    and key ~ '^[a-z][a-z0-9_]{1,63}$'
+  ),
+  constraint feature_flags_description_length check (char_length(description) <= 500),
+  constraint feature_flags_rollout_range check (rollout_percentage between 0 and 100)
+);
+
+create table if not exists public.feature_flag_overrides (
+  flag_key text not null references public.feature_flags(key) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  enabled boolean not null,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (flag_key, user_id)
+);
+
+create index if not exists feature_flag_overrides_user_flag_idx
+  on public.feature_flag_overrides(user_id, flag_key);
+
+drop trigger if exists feature_flags_set_updated_at on public.feature_flags;
+create trigger feature_flags_set_updated_at
+before update on public.feature_flags
+for each row execute function public.set_updated_at();
+
+drop trigger if exists feature_flag_overrides_set_updated_at on public.feature_flag_overrides;
+create trigger feature_flag_overrides_set_updated_at
+before update on public.feature_flag_overrides
+for each row execute function public.set_updated_at();
+
+insert into public.feature_flags (
+  key,
+  description,
+  enabled,
+  rollout_percentage,
+  authenticated_only
+)
+values
+  ('media_upload', '故事图片上传界面。权限与配额仍由数据库单独强制。', true, 100, true),
+  ('notifications', '站内通知中心与通知偏好。', true, 100, true),
+  ('subscriptions', '未来套餐升级和支付入口。当前保持关闭。', false, 0, true),
+  ('creator_features', '未来 Creator 专属展示能力。当前保持关闭。', false, 0, true)
+on conflict (key) do update
+set description = excluded.description,
+    authenticated_only = excluded.authenticated_only;
+
+create or replace function public.get_evaluated_feature_flags()
+returns table (
+  flag_key text,
+  enabled boolean
+)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  with actor as (
+    select auth.uid() as user_id
+  )
+  select
+    flag.key,
+    coalesce(
+      override.enabled,
+      case
+        when not flag.enabled then false
+        when flag.authenticated_only and actor.user_id is null then false
+        when flag.rollout_percentage = 100 then true
+        when flag.rollout_percentage = 0 then false
+        when actor.user_id is null then false
+        else mod(
+          abs(
+            pg_catalog.hashtextextended(
+              actor.user_id::text || ':' || flag.key,
+              8142303
+            )::numeric
+          ),
+          100
+        ) < flag.rollout_percentage
+      end,
+      false
+    ) as enabled
+  from public.feature_flags flag
+  cross join actor
+  left join public.feature_flag_overrides override
+    on override.flag_key = flag.key
+    and override.user_id = actor.user_id
+  order by flag.key;
+$$;
+
+alter table public.product_feedback enable row level security;
+alter table public.feature_flags enable row level security;
+alter table public.feature_flag_overrides enable row level security;
+
+drop policy if exists "product_feedback_has_no_browser_rows" on public.product_feedback;
+create policy "product_feedback_has_no_browser_rows"
+on public.product_feedback for select to anon, authenticated
+using (false);
+
+drop policy if exists "feature_flags_have_no_direct_browser_rows" on public.feature_flags;
+create policy "feature_flags_have_no_direct_browser_rows"
+on public.feature_flags for select to anon, authenticated
+using (false);
+
+drop policy if exists "feature_flag_overrides_have_no_browser_rows" on public.feature_flag_overrides;
+create policy "feature_flag_overrides_have_no_browser_rows"
+on public.feature_flag_overrides for select to anon, authenticated
+using (false);
+
+revoke all on table public.product_feedback from public, anon, authenticated;
+revoke all on table public.feature_flags from public, anon, authenticated;
+revoke all on table public.feature_flag_overrides from public, anon, authenticated;
+
+revoke all on function public.get_evaluated_feature_flags()
+from public, anon, authenticated;
+grant execute on function public.get_evaluated_feature_flags()
+to anon, authenticated;
+
+comment on table public.product_feedback is
+  'Rate-limited product feedback. The app never automatically attaches story bodies, auth tokens or screenshots.';
+comment on table public.feature_flags is
+  'Operational UI rollout controls. Feature flags never grant database authorization.';
+comment on table public.feature_flag_overrides is
+  'Trusted-operator per-user rollout overrides. Rows are never exposed to browser roles.';
+comment on function public.get_evaluated_feature_flags() is
+  'Returns only evaluated booleans for the current auth identity; it accepts no user-id parameter.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
+-- MIGRATION: 20260830085143_v14_governance_notification_entity_fix.sql
+-- ============================================================
+-- Keep the notification entity contract compatible with governance events.
+-- Account moderation points to the affected public profile without exposing
+-- authentication data. Existing notification rows remain valid.
+
+do $$
+begin
+  if to_regclass('public.notifications') is null
+    or to_regclass('public.account_moderation') is null
+  then
+    raise exception using
+      errcode = '55000',
+      message = 'governance notification fix requires notifications and governance migrations';
+  end if;
+end;
+$$;
+
+alter table public.notifications
+  drop constraint if exists notifications_entity_values;
+
+alter table public.notifications
+  add constraint notifications_entity_values check (
+    entity_type is null or entity_type in (
+      'entry', 'entry_participant', 'group', 'group_invitation',
+      'story_route', 'account', 'profile', 'export', 'system'
+    )
+  ) not valid;
+
+alter table public.notifications
+  validate constraint notifications_entity_values;
+
+comment on constraint notifications_entity_values on public.notifications is
+  'Notification targets, including public profiles referenced by account moderation events.';
+
+notify pgrst, 'reload schema';
+
+-- ============================================================
 -- AUTH PROFILE BACKFILL
 -- ============================================================
 -- drop schema public cascade 会保留 auth.users，但会重建 profiles。
@@ -7682,6 +12213,19 @@ select
   to_regclass('public.tags') is not null as tags_ready,
   to_regclass('public.entry_drafts') is not null as entry_drafts_ready,
   to_regclass('public.account_deletion_requests') is not null as account_deletion_requests_ready,
+  to_regclass('public.notifications') is not null as notifications_ready,
+  to_regclass('public.notification_preferences') is not null as notification_preferences_ready,
+  to_regclass('public.entry_media_assets') is not null as entry_media_assets_ready,
+  to_regclass('public.media_cleanup_queue') is not null as media_cleanup_queue_ready,
+  to_regclass('public.app_admins') is not null as app_admins_ready,
+  to_regclass('public.moderation_audit_logs') is not null as moderation_audit_logs_ready,
+  to_regclass('public.product_events') is not null as product_events_ready,
+  to_regclass('public.plans') is not null as plans_ready,
+  to_regclass('public.plan_entitlements') is not null as plan_entitlements_ready,
+  to_regclass('public.user_subscriptions') is not null as user_subscriptions_ready,
+  to_regclass('public.product_feedback') is not null as product_feedback_ready,
+  to_regclass('public.feature_flags') is not null as feature_flags_ready,
+  to_regclass('public.feature_flag_overrides') is not null as feature_flag_overrides_ready,
   (
     select count(*)::integer
     from public.profiles

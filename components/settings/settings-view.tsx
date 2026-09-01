@@ -18,6 +18,8 @@ import {
 } from "@/lib/profile/display-name";
 import { profileSchema, type ProfileFormValues } from "@/lib/validation/profile";
 import { DataPortabilityPanel } from "@/components/settings/data-portability-panel";
+import { SessionSecurityPanel } from "@/components/settings/session-security-panel";
+import Link from "next/link";
 
 export function SettingsView() {
   const { user, profile, loading, configured, refreshProfile } = useAuth();
@@ -98,6 +100,17 @@ export function SettingsView() {
           {notice ? <div className={notice.includes("已保存") ? "inline-success" : "notice"} role="status">{notice}</div> : null}
           <div className="form-actions"><button className="primary-button" type="submit" disabled={form.formState.isSubmitting}>{form.formState.isSubmitting ? "正在保存…" : "保存设置"}</button></div>
         </form>
+      </section>
+      <SessionSecurityPanel />
+      <section className="settings-section-card" aria-labelledby="notification-settings-title">
+        <h2 id="notification-settings-title">通知</h2>
+        <p>管理共同经历、群组、时间胶囊与账号安全提醒的接收方式。</p>
+        <Link className="secondary-button nav-link" href="/settings/notifications">打开通知设置</Link>
+      </section>
+      <section className="settings-section-card" aria-labelledby="usage-settings-title">
+        <h2 id="usage-settings-title">套餐与使用量</h2>
+        <p>查看故事、故事线路、图片文件与存储空间的当前使用情况。</p>
+        <Link className="secondary-button nav-link" href="/settings/usage">查看套餐与使用量</Link>
       </section>
       <DataPortabilityPanel />
       </>

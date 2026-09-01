@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppHeader } from "@/components/navigation/app-header";
 import { useAuth } from "@/components/providers/auth-provider";
@@ -34,6 +35,7 @@ export function GroupDetailView({ slug }: { slug: string }) {
 }
 
 function GroupDetailForScope({ slug }: { slug: string }) {
+  const router = useRouter();
   const { user, loading: authLoading, dataScope } = useAuth();
   const [group, setGroup] = useState<Group | null>(null);
   const [role, setRole] = useState<GroupRole | null>(null);
@@ -126,7 +128,7 @@ function GroupDetailForScope({ slug }: { slug: string }) {
   const selected = useMemo(() => entries.find((entry) => entry.id === selectedId) ?? null, [entries, selectedId]);
   const join = async () => {
     if (!user) {
-      window.location.assign(`/login?next=${encodeURIComponent(`/groups/${slug}`)}`);
+      router.push(`/login?next=${encodeURIComponent(`/groups/${slug}`)}`);
       return;
     }
     if (!group) return;

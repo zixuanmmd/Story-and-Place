@@ -1,6 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { reportOperationalError } from "@/lib/errors";
+import { consumeRateLimit, getRequestClientIdentifier } from "@/lib/security/rate-limit";
+import { getSupabaseServerAdminClient } from "@/lib/supabase/server-admin";
 import type { Database } from "@/types/database";
 
 export const runtime = "nodejs";
@@ -12,10 +15,16 @@ const requestSchema = z.object({
   password: z.string().min(1).max(1000),
 }).strict();
 
-function jsonError(message: string, status: number) {
+function jsonError(message: string, status: number, retryAfterSeconds?: number) {
   return NextResponse.json(
     { ok: false, message },
-    { status, headers: { "cache-control": "no-store" } },
+    {
+      status,
+      headers: {
+        "cache-control": "no-store",
+        ...(retryAfterSeconds ? { "retry-after": String(retryAfterSeconds) } : {}),
+      },
+    },
   );
 }
 
@@ -24,9 +33,21 @@ export async function POST(request: Request) {
   const browserKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
     ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !browserKey || !serviceRoleKey) {
+  if (!supabaseUrl || !browserKey || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return jsonError("账号删除服务尚未完成配置，请联系项目维护者。", 503);
+  }
+
+  try {
+    const ipLimit = await consumeRateLimit(
+      { scope: "account-delete-ip", limit: 6, windowSeconds: 900 },
+      getRequestClientIdentifier(request),
+    );
+    if (!ipLimit.allowed) {
+      return jsonError("删除请求过于频繁，请稍后再试。", 429, ipLimit.retryAfterSeconds);
+    }
+  } catch (error) {
+    reportOperationalError(error, "account-delete:ip-rate-limit");
+    return jsonError("账号安全服务暂时不可用，请稍后重试。", 503);
   }
 
   const authorization = request.headers.get("authorization");
@@ -49,6 +70,19 @@ export async function POST(request: Request) {
   const user = userData.user;
   if (userError || !user?.email) return jsonError("登录状态已过期，请重新登录。", 401);
 
+  try {
+    const userLimit = await consumeRateLimit(
+      { scope: "account-delete-user", limit: 3, windowSeconds: 3600 },
+      user.id,
+    );
+    if (!userLimit.allowed) {
+      return jsonError("删除请求过于频繁，请稍后再试。", 429, userLimit.retryAfterSeconds);
+    }
+  } catch (error) {
+    reportOperationalError(error, "account-delete:user-rate-limit");
+    return jsonError("账号安全服务暂时不可用，请稍后重试。", 503);
+  }
+
   const passwordClient = createClient<Database>(supabaseUrl, browserKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -58,9 +92,7 @@ export async function POST(request: Request) {
     return jsonError("密码不正确，账号尚未删除。", 403);
   }
 
-  const admin = createClient<Database>(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = getSupabaseServerAdminClient();
   const { data: deletionRequest, error: requestError } = await admin
     .from("account_deletion_requests")
     .select("id, user_id, deletion_mode, status")

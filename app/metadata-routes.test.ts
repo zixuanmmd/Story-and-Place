@@ -19,7 +19,18 @@ describe("launch metadata routes", () => {
   it("publishes only stable, public discovery routes in the static sitemap", () => {
     const paths = sitemap().map((item) => new URL(item.url).pathname);
 
-    expect(paths).toEqual(["/", "/explore", "/search", "/tags", "/groups"]);
+    expect(paths).toEqual([
+      "/",
+      "/explore",
+      "/search",
+      "/tags",
+      "/groups",
+      "/help",
+      "/terms",
+      "/privacy",
+      "/community-guidelines",
+      "/status",
+    ]);
     expect(paths).not.toContain("/settings");
     expect(paths).not.toContain("/my-records");
   });

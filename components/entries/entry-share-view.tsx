@@ -8,6 +8,7 @@ import { ProtectedState } from "@/components/layout/protected-state";
 import { MapErrorBoundary } from "@/components/map/map-error-boundary";
 import { EntryTags } from "@/components/entries/entry-tags";
 import { EntrySocial } from "@/components/social/entry-social";
+import { EntryMediaGallery } from "@/components/entries/entry-media-gallery";
 import { useAuth } from "@/components/providers/auth-provider";
 import { getCategoryLabel, PlaceCategoryIcon } from "@/lib/categories/registry";
 import { getEntryShareData, type EntryShareData } from "@/lib/data/entry-share";
@@ -19,6 +20,7 @@ import { formatUnlockAt, getTimeCapsuleState } from "@/lib/time/time-capsule";
 import { ENTRY_EDITABLE_FIELD_LABELS } from "@/lib/data/entry-collaboration";
 import { TIME_PRECISION_LABELS } from "@/lib/validation/entry";
 import { useEntryRealtime } from "@/hooks/use-entry-realtime";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 const EntryMiniMap = dynamic(
   () => import("@/components/map/entry-mini-map").then((module) => module.EntryMiniMap),
@@ -46,6 +48,7 @@ function EntryShareForScope({ entryId }: { entryId: string }) {
   const [failed, setFailed] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const requestSequence = useRef(0);
+  const trackedPublicOpen = useRef(false);
   const currentUserId = user?.id ?? null;
 
   const load = useCallback(async () => {
@@ -56,6 +59,10 @@ function EntryShareForScope({ entryId }: { entryId: string }) {
       const next = await getEntryShareData(entryId, currentUserId);
       if (requestSequence.current !== requestId) return;
       setData(next);
+      if (next?.entry.visibility === "public" && !trackedPublicOpen.current) {
+        trackedPublicOpen.current = true;
+        recordProductEvent("public_story_opened", { source: "entry-share" });
+      }
       setFailed(false);
       setStatus(null);
     } catch (loadError) {
@@ -97,6 +104,9 @@ function EntryShareForScope({ entryId }: { entryId: string }) {
           window.location.origin,
         ),
       }, navigator);
+      if (result === "copied" || result === "shared") {
+        recordProductEvent("story_shared", { source: "entry-share", content_type: "entry" });
+      }
       setStatus(result === "copied" ? "故事链接已复制。" : result === "shared" ? "分享面板已打开。" : null);
     } catch {
       setStatus("暂时无法复制分享链接，请从浏览器地址栏复制。 ");
@@ -167,11 +177,17 @@ function EntryShareForScope({ entryId }: { entryId: string }) {
             {capsuleState === "future" ? `这枚时间胶囊将在 ${formatUnlockAt(entry.unlock_at)} 解锁。` : `这枚时间胶囊已于 ${formatUnlockAt(entry.unlock_at)} 解锁。`}
           </div>
         ) : null}
+        {isOwner && entry.moderation_status && entry.moderation_status !== "active" ? (
+          <div className="inline-notice" role="status">
+            这条公开故事当前已被限制展示。{entry.moderation_reason ? ` 原因：${entry.moderation_reason}` : ""}
+          </div>
+        ) : null}
         {status ? <div className="inline-notice" role="status">{status}</div> : null}
 
         <div className="entry-share-layout">
           <div className="entry-share-story">
             <EntryTags entry={entry} />
+            <EntryMediaGallery entryId={entry.id} storyTitle={entry.title} isOwner={isOwner} />
             <div className="entry-share-content">{entry.content}</div>
 
             <section className="entry-share-people" aria-labelledby="story-people-title">

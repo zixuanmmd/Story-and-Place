@@ -32,6 +32,7 @@ import {
   resolveRegistrationOutcome,
 } from "@/lib/auth/registration";
 import { ensureOnboardingDecision } from "@/lib/data/onboarding";
+import { recordProductEvent } from "@/lib/analytics/provider";
 
 type AuthFormProps = {
   mode: "login" | "register";
@@ -81,6 +82,7 @@ export function AuthForm({ mode }: AuthFormProps) {
         }
 
         signUpAttempted = true;
+        recordProductEvent("signup_started", { source: "register-form" });
         const { data, error } = await supabase.auth.signUp({
           email: values.email,
           password: values.password,
@@ -104,6 +106,7 @@ export function AuthForm({ mode }: AuthFormProps) {
           }
           return;
         }
+        recordProductEvent("signup_completed", { source: "register-form" });
         setNotice("注册成功，正在进入地图……");
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({
@@ -253,6 +256,12 @@ export function AuthForm({ mode }: AuthFormProps) {
             ) : null}
           </label>
 
+          {!isRegister ? (
+            <Link className="auth-inline-link" href="/forgot-password">
+              忘记密码？
+            </Link>
+          ) : null}
+
           {notice ? (
             <div className="notice" role="status">
               {notice}
@@ -298,6 +307,16 @@ export function AuthForm({ mode }: AuthFormProps) {
             {isRegister ? "前往登录" : "创建账户"}
           </Link>
         </p>
+        {isRegister ? (
+          <p className="auth-legal-links">
+            注册前请阅读待法律审阅的
+            <Link href="/terms">服务条款草案</Link>
+            <span aria-hidden="true">、</span>
+            <Link href="/privacy">隐私说明草案</Link>
+            <span aria-hidden="true">和</span>
+            <Link href="/community-guidelines">社区规范草案</Link>。
+          </p>
+        ) : null}
       </section>
     </div>
   );
