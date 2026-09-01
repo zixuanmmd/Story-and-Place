@@ -123,15 +123,22 @@ export function GlobalFeedback() {
             <button className="icon-button" type="button" onClick={close} aria-label="关闭反馈窗口">×</button>
           </div>
           <p className="field-hint">不会自动收集故事正文、密码、登录令牌或截图。</p>
-          <label>
+          <label htmlFor="global-feedback-category">
             <span>反馈类型</span>
-            <select value={category} onChange={(event) => setCategory(event.target.value as FeedbackCategory)}>
+            <select
+              id="global-feedback-category"
+              name="category"
+              value={category}
+              onChange={(event) => setCategory(event.target.value as FeedbackCategory)}
+            >
               {CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </select>
           </label>
-          <label>
+          <label htmlFor="global-feedback-message">
             <span>反馈内容 *</span>
             <textarea
+              id="global-feedback-message"
+              name="message"
               rows={6}
               maxLength={2000}
               value={message}

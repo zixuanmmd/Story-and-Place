@@ -9,6 +9,7 @@ describe("getSafeRedirectPath", () => {
     ["/my-records", "/my-records"],
     ["/settings", "/settings"],
     ["/settings/notifications", "/settings/notifications"],
+    ["/settings/usage", "/settings/usage"],
     ["/notifications", "/notifications"],
     ["/?restoreDraft=1", "/?restoreDraft=1"],
     [
@@ -148,5 +149,8 @@ describe("getSafeRedirectPath", () => {
     expect(
       getAuthPageHref("/register", "https://evil.example", ORIGIN),
     ).toBe("/register?next=%2F");
+    expect(
+      getAuthPageHref("/login", "/settings/usage", ORIGIN),
+    ).toBe("/login?next=%2Fsettings%2Fusage");
   });
 });

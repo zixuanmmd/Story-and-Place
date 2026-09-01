@@ -15,6 +15,10 @@ describe("product completeness UI contract", () => {
     expect(feedback).toContain('aria-haspopup="dialog"');
     expect(feedback).toContain('event.key === "Escape"');
     expect(feedback).toContain("onClose={() => triggerRef.current?.focus()}");
+    expect(feedback).toContain('id="global-feedback-category"');
+    expect(feedback).toContain('name="category"');
+    expect(feedback).toContain('id="global-feedback-message"');
+    expect(feedback).toContain('name="message"');
     expect(feedback).not.toContain("window.location.search");
   });
 
