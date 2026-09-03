@@ -711,6 +711,8 @@ Supabase/Auth/PostgreSQL 已知错误按 code/status 映射为中文提示；未
 
 完整流程见 [`docs/disaster-recovery.md`](docs/disaster-recovery.md)。当前目标为 RPO 24 小时、RTO 8 小时，但在定时备份和季度恢复演练实际落实前，它们只是目标而非 SLA。数据库逻辑备份、Storage 对象备份和不含 secret 的平台配置清单必须分别保存；Supabase 数据库备份不包含 Storage 文件。
 
+Production 发布后的 Supabase Advisor 分类、泄露密码保护人工配置和外键索引加固流程见 [`docs/post-launch-hardening.md`](docs/post-launch-hardening.md)。不要为消除 Advisor 提示而给服务端队列表添加浏览器策略，也不要批量撤销 RLS helper 的 `EXECUTE` 权限。
+
 本地可运行非破坏性检查：
 
 ```bash
@@ -755,7 +757,7 @@ __MACOSX/
 - v1.1 与 v1.2 的 `202608040001` 至 `202608070001` migration 必须按顺序应用；`202608050005` 修复匿名 Explore ACL，`202608050006` 补充复合标签发现能力，`202608070001` 增加可信运营端维护的公开故事精选。
 - v1.3 的 `202608080001_v13_global_search.sql`、`202608080002_v13_entry_drafts.sql` 和 `202608080003_v13_data_portability_account_deletion.sql` 已按顺序应用到当前测试项目；正式环境仍必须按相同顺序单独执行。
 - `202608110001_v13_global_search_escape_fix.sql`、`202608110002_trigger_function_execute_hardening.sql` 与 `20260811111243_timeline_participant_acl_fix.sql` 已于 2026-08-11 按顺序应用到测试项目 `bmzsabgzzrwekghdceyj`。匿名关键词与特殊字符搜索已验证不再返回 `22025`，两个内部触发器函数对 `public`、`anon` 和 `authenticated` 的直接执行权均已撤销；匿名公共时间线可以正常调用，同时匿名直接读取参与关系仍返回零行。
-- `202608270001_v14_security_reliability.sql`、`202608280001_v14_notifications.sql` 与 `202608280002_v14_story_media.sql` 已于 2026-08-28 按顺序应用到测试项目；随后追加 `20260828102358_v14_rate_limit_clock_fix.sql` 与 `20260828102558_v14_rate_limit_builtin_fix.sql` 修复 PostgreSQL 17 兼容问题。远端 migration 历史当前同步至这 30 份文件；本地新增的治理、产品分析、商业化基础与产品完整性 migration 尚未远端执行。媒体清理使用私密 Storage、独立服务端密钥与每日受控 Cron。
+- v1.4 的安全可靠性、通知、媒体、治理、产品分析、商业化基础、产品完整性及修复 migration 已应用到当前 Production 项目；远端控制台执行产生的记录时间戳与部分本地文件时间戳不同，但 migration 名称和数据库对象已逐项核对，七组事务型 SQL/RLS 断言均通过。`202609020001_v14_post_launch_fk_indexes.sql` 是下一份待 Preview 与人工授权的增量 migration，尚未应用 Production。媒体清理使用私密 Storage、独立服务端密钥与每日受控 Cron。
 - 数据导出与账号删除依赖 `202608080003_v13_data_portability_account_deletion.sql` 和服务端 `SUPABASE_SERVICE_ROLE_KEY`。缺少任一项时页面会明确报告未初始化或服务端未配置；不会把管理密钥放入客户端作为替代方案。
 - 全局搜索每页 20 条，数据库单次最多允许 51 条。搜索地图只绘制当前已加载页中的地点结果；时间胶囊在解锁前即使对作者可读，也不会进入搜索、标签结果数量或包含它的路线结果。
 - Explore 的五个主题分类基于受控标签关键词，不会用正文猜测分类；复合标签（例如 `#成都科幻`、`#文学空间`）可以进入对应分类，未添加相关标签的公开故事仍只会出现在“全部”。

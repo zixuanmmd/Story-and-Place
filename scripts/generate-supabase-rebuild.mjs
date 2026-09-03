@@ -43,6 +43,7 @@ const migrationNames = [
   "202608290003_v14_commercial_foundation.sql",
   "202608290004_v14_product_completeness.sql",
   "20260830085143_v14_governance_notification_entity_fix.sql",
+  "202609020001_v14_post_launch_fk_indexes.sql",
 ];
 const outputPath = resolve(
   projectRoot,
