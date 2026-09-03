@@ -11,7 +11,7 @@
 - `202609020001_v14_post_launch_fk_indexes.sql` 已应用；远端记录为 `20260903030934_v14_post_launch_fk_indexes`
 - 外键索引目录断言为 22/22 valid/ready，Performance Advisor 的未覆盖外键提示为 0
 - 合并后 Production 构建成功，首页、Explore、Search、独立故事页与健康接口冒烟通过，验证窗口未发现 runtime error
-- 2026-09-03 使用三个一次性 Production 测试身份完成 19 项真实 RLS/RPC 冒烟断言；测试账户、故事、群组与通知均按精确 ID 清理，清理后测试资料残留为 0
+- 2026-09-03 使用三个一次性 Production 测试身份完成 19 项真实 RLS/RPC 冒烟断言和 11 项隔离 Chrome 浏览器 E2E；测试账户、故事、群组与通知均按精确 ID 清理，清理后测试资料残留为 0
 
 ## Supabase Advisor 分类
 
@@ -81,6 +81,7 @@ supabase/tests/v14_post_launch_hardening_assertions.sql
 - 字段级编辑：仅授予 `time` 的共同经历者可以修改时间整体，不能修改正文或可见性。
 - 写入边界：B 不能伪造 A 的 `user_id`，不能直接修改或删除 A 的故事。
 - 清理结论：三个一次性账户及其测试故事、群组和通知均已删除，未发现测试资料残留。
+- Production 浏览器 E2E：11/11 通过。覆盖 A 登录后查看自己的公开/私密故事、退出后私密故事立即不可见、匿名读取公开故事、群组成员 B 读取群组故事、B/C 无法读取 A 的私密故事、非成员 C 与退出登录后无法读取群组故事，以及三轮登录/退出之间的会话隔离。测试使用独立临时 Chrome profile，未读取或修改维护者日常浏览器数据，结束后 profile 与数据库测试资料均已清理。
 - 应用质量门禁：108 个测试文件、536 项测试全部通过；ESLint 零警告、TypeScript 检查、Production build 均通过。
 - 依赖审计：`npm audit --omit=dev` 为 0 个漏洞；当前 Next.js 保持 `16.3.3`，未在本次文档收口中升级。
 - 灾备材料：`npm run dr:validate` 通过，确认 36 份 migration 与恢复文档一致；该命令是非联网 dry-run，不等同于真实数据库或 Storage 恢复演练。
